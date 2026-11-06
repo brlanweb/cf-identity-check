@@ -136,9 +136,7 @@ async function run(): Promise<void> {
       webrtcGlobalIps: browser.webrtc.globalIps,
     },
   });
-  const statusText = edgeResult.error
-    ? "边缘接口不可用，下面主要是浏览器信号。"
-    : "采集完成。结果只留在这个页面里。";
+  const statusText = edgeResult.error ? "边缘接口不可用，分数主要来自浏览器。" : "";
   renderPage({
     status: statusText,
     edgeError: edgeResult.error,

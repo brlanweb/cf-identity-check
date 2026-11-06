@@ -1,4 +1,5 @@
 import { headerValue, unquote } from "./redact.ts";
+import { evaluateServices, type ServiceGroup } from "./services.ts";
 
 export type Outlook = "higher" | "mixed" | "lower";
 
@@ -47,6 +48,22 @@ export type Mismatch = {
 
 export type Axis = { id: string; label: string; score: number; note: string };
 
+export type Glance = {
+  id: "country" | "network" | "geo" | "client" | "automation";
+  label: string;
+  value: string;
+  badge: string;
+  tone: "ok" | "warn" | "bad" | "neutral";
+};
+
+export type RiskScore = {
+  id: "spoof" | "fraud";
+  label: "伪装度" | "欺诈分";
+  score: number;
+  tone: "ok" | "warn" | "bad";
+  status: "低" | "中" | "高";
+};
+
 export type ScoreResult = {
   outlook: Outlook;
   headline: string;
@@ -54,6 +71,9 @@ export type ScoreResult = {
   reasons: Reason[];
   axes: Axis[];
   mismatches: Mismatch[];
+  glances: Glance[];
+  risks: RiskScore[];
+  services: ServiceGroup[];
 };
 
 const RANK: Outlook[] = ["lower", "mixed", "higher"];
@@ -65,22 +85,21 @@ const HEADLINE: Record<Outlook, string> = {
 };
 
 const SUMMARY: Record<Outlook, string> = {
-  higher: "按这次访问已经暴露的信号，YouTube、Claude 这类会看地区和网络类型的服务，直接打开的阻力相对较小。",
-  mixed: "信号并不站在同一边。地区也许允许，但机房地址、地理不一致或客户端异常会让部分平台拒绝或要求额外验证。",
-  lower: "按边缘位置、网络类型或客户端异常来看，这类平台直接可用的可能性偏低。",
+  higher: "四项信号比较整齐，清单里多数 AI 和流媒体的直接打开阻力相对较小。",
+  mixed: "信号不完全同向。各项服务对地区和机房地址的态度不同，看下面的矩阵。",
+  lower: "按地区、网络类型或客户端异常，清单里不少服务处于较高阻力。",
 };
 
 /**
- * Places where YouTube is widely reported as unreachable, or where Claude has
- * long been outside the published service area. This is a static hint, not a
- * live policy list and not a connectivity test.
+ * Places where a broad set of foreign consumer services is widely reported as
+ * unreachable. Per-service nuance lives in services.ts. Static hint only.
  */
 const RESTRICTED: Record<string, string> = {
-  CN: "边缘 IP 落在中国大陆。公开资料里，YouTube 与 Claude 在这里通常不能直接使用。",
-  IR: "边缘 IP 落在伊朗。YouTube 在这里经常无法直接访问。Claude 是否开放以服务商当时的地区政策为准。",
-  TM: "边缘 IP 落在土库曼斯坦。YouTube 在这里经常无法直接访问。",
+  CN: "边缘 IP 落在中国大陆。公开资料里，YouTube、Netflix、Google 以及 Claude、ChatGPT 等多数境外服务在这里通常不能直接使用。",
+  IR: "边缘 IP 落在伊朗。YouTube 与多项 Google 服务经常无法直接访问，部分 AI 服务也不在开放地区。",
+  TM: "边缘 IP 落在土库曼斯坦。YouTube 等境外网站在这里经常无法直接访问。",
   KP: "边缘 IP 落在朝鲜。对外网站访问通常受到严格限制。",
-  ER: "边缘 IP 落在厄立特里亚。YouTube 在这里经常无法直接访问。",
+  ER: "边缘 IP 落在厄立特里亚。YouTube 等境外网站在这里经常无法直接访问。",
 };
 
 const STRONG_HOSTING = [
@@ -301,6 +320,10 @@ export const COUNTRY_ZH: Record<string, string> = {
   ER: "厄立特里亚",
   RU: "俄罗斯",
   BR: "巴西",
+  SY: "叙利亚",
+  CU: "古巴",
+  BY: "白俄罗斯",
+  VE: "委内瑞拉",
   T1: "Tor",
   XX: "未知",
 };
@@ -552,7 +575,7 @@ export function scoreVisit(input: ScoreInput): ScoreResult {
     outlook = "mixed";
     reasons.push({
       tone: "warn",
-      text: `ASN 组织名更像云厂商、托管或 VPN（${input.edge?.asOrganization}）。YouTube 往往仍可打开，Claude 一类服务经常拒绝数据中心地址。`,
+      text: `ASN 组织名更像云厂商、托管或 VPN（${input.edge?.asOrganization}）。数据中心地址上，Netflix、Disney+、Claude、ChatGPT 经常拒绝，YouTube 一类则宽松一些。`,
     });
   } else if (network.kind === "residential") {
     outlook = "higher";
@@ -622,6 +645,36 @@ export function scoreVisit(input: ScoreInput): ScoreResult {
     },
   ];
 
+  const glances = buildGlances({
+    hasEdge,
+    country,
+    network: network.kind,
+    geoConflict: geo.conflict,
+    edgeTimezone: input.edge?.timezone ?? null,
+    clientScore: client.score,
+    clientMismatchCount: client.mismatches.length,
+    automationScore: automation.score,
+  });
+
+  const services = evaluateServices({
+    hasEdge,
+    country,
+    countryName: countryLabel(country || null),
+    network: network.kind,
+    tor: country === "T1",
+    geoConflict: geo.conflict,
+    clientScore: client.score,
+    automationScore: automation.score,
+  });
+
+  const risks = buildRisks({
+    country,
+    network: network.kind,
+    geoConflict: geo.conflict,
+    automationScore: automation.score,
+    mismatches: client.mismatches,
+  });
+
   return {
     outlook,
     headline: HEADLINE[outlook],
@@ -629,7 +682,113 @@ export function scoreVisit(input: ScoreInput): ScoreResult {
     reasons,
     axes,
     mismatches: client.mismatches,
+    glances,
+    risks,
+    services,
   };
+}
+
+function riskBand(score: number): Pick<RiskScore, "tone" | "status"> {
+  if (score >= 60) return { tone: "bad", status: "高" };
+  if (score >= 30) return { tone: "warn", status: "中" };
+  return { tone: "ok", status: "低" };
+}
+
+function buildRisks(input: {
+  country: string;
+  network: "residential" | "hosting" | "unknown";
+  geoConflict: boolean;
+  automationScore: number;
+  mismatches: Mismatch[];
+}): RiskScore[] {
+  const labels = new Set(input.mismatches.map((item) => item.label));
+  const hosting = input.network === "hosting";
+  const tor = input.country === "T1";
+  let spoof = 0;
+  if (input.geoConflict) spoof += 36;
+  if (labels.has("系统平台")) spoof += 24;
+  if (labels.has("语言")) spoof += 14;
+  if (labels.has("移动端标记")) spoof += 12;
+  if (labels.has("显卡与系统")) spoof += 12;
+  if (labels.has("屏幕")) spoof += 10;
+  if (labels.has("公网地址")) spoof += 20;
+  if (hosting) spoof += 34;
+  if (tor) spoof += 46;
+  if (input.automationScore >= 45) spoof += 16;
+  else if (input.automationScore > 0) spoof += 8;
+
+  let fraud = 0;
+  if (tor) fraud += 64;
+  if (input.automationScore >= 70) fraud += 62;
+  else if (input.automationScore >= 30) fraud += 34;
+  else if (input.automationScore > 0) fraud += 16;
+  if (hosting) fraud += 18;
+  if (input.geoConflict) fraud += 14;
+  let client = 0;
+  if (labels.has("系统平台")) client += 16;
+  if (labels.has("语言")) client += 8;
+  if (labels.has("移动端标记")) client += 8;
+  if (labels.has("显卡与系统")) client += 8;
+  if (labels.has("屏幕")) client += 12;
+  fraud += Math.min(30, client);
+  if (labels.has("公网地址")) fraud += 10;
+
+  const spoofScore = Math.max(0, Math.min(100, spoof));
+  const fraudScore = Math.max(0, Math.min(100, fraud));
+  return [
+    { id: "spoof", label: "伪装度", score: spoofScore, ...riskBand(spoofScore) },
+    { id: "fraud", label: "欺诈分", score: fraudScore, ...riskBand(fraudScore) },
+  ];
+}
+
+function buildGlances(input: {
+  hasEdge: boolean;
+  country: string;
+  network: "residential" | "hosting" | "unknown";
+  geoConflict: boolean;
+  edgeTimezone: string | null;
+  clientScore: number;
+  clientMismatchCount: number;
+  automationScore: number;
+}): Glance[] {
+  const countryGlance: Glance = !input.hasEdge
+    ? { id: "country", label: "边缘地区", value: "未知", badge: "无边缘", tone: "neutral" }
+    : input.country === "T1"
+      ? { id: "country", label: "边缘地区", value: "Tor", badge: "高风险", tone: "bad" }
+      : RESTRICTED[input.country]
+        ? { id: "country", label: "边缘地区", value: countryLabel(input.country), badge: "受限", tone: "bad" }
+        : !input.country || input.country === "XX"
+          ? { id: "country", label: "边缘地区", value: "未知", badge: "无代码", tone: "neutral" }
+          : { id: "country", label: "边缘地区", value: countryLabel(input.country), badge: "可见", tone: "ok" };
+
+  const networkGlance: Glance =
+    input.network === "residential"
+      ? { id: "network", label: "网络类型", value: "住宅宽带", badge: "住宅", tone: "ok" }
+      : input.network === "hosting"
+        ? { id: "network", label: "网络类型", value: "机房或 VPN", badge: "机房", tone: "warn" }
+        : { id: "network", label: "网络类型", value: "未能归类", badge: "未知", tone: "neutral" };
+
+  const geoGlance: Glance = !input.edgeTimezone
+    ? { id: "geo", label: "时区对照", value: "缺少边缘时区", badge: "跳过", tone: "neutral" }
+    : input.geoConflict
+      ? { id: "geo", label: "时区对照", value: "不一致", badge: "偏差", tone: "warn" }
+      : { id: "geo", label: "时区对照", value: "一致", badge: "对齐", tone: "ok" };
+
+  const clientGlance: Glance =
+    input.clientMismatchCount === 0
+      ? { id: "client", label: "客户端", value: "未见矛盾", badge: "整齐", tone: "ok" }
+      : input.clientScore < 55
+        ? { id: "client", label: "客户端", value: "多处矛盾", badge: "异常", tone: "bad" }
+        : { id: "client", label: "客户端", value: "有差异", badge: "留意", tone: "warn" };
+
+  const automationGlance: Glance =
+    input.automationScore >= 45
+      ? { id: "automation", label: "自动化", value: "有迹象", badge: "风险", tone: "bad" }
+      : input.automationScore > 0
+        ? { id: "automation", label: "自动化", value: "弱迹象", badge: "留意", tone: "warn" }
+        : { id: "automation", label: "自动化", value: "未见迹象", badge: "干净", tone: "ok" };
+
+  return [countryGlance, networkGlance, geoGlance, clientGlance, automationGlance];
 }
 
 export function edgeSnapshotFromApi(payload: {
