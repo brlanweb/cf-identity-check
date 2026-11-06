@@ -1,7 +1,10 @@
 import "./styles.css";
 import { collectBrowser, type BrowserReport } from "./collect.ts";
-import { shortHash } from "./hash.ts";
-import { renderPage, type Field } from "./render.ts";
+import { sha256, shortHash } from "./hash.ts";
+import { renderPage, type Field, type Reachability, type SessionMemo } from "./render.ts";
+import type { AbuseRecord } from "../shared/history.ts";
+import { isReputationLookupIp } from "../shared/history.ts";
+import type { IpIntel } from "../shared/intel.ts";
 import { headerValue } from "../shared/redact.ts";
 import {
   claimedFromSignals,
@@ -18,9 +21,50 @@ type EdgePayload = {
   cf: Record<string, unknown>;
   headers: Record<string, string>;
   omittedHeaders: string[];
+  history?: AbuseRecord;
+  intel?: IpIntel;
   collectedAt: string;
   privacy: string;
 };
+
+const SESSION_KEY = "cf-identity-check-session";
+
+type SessionRow = { ip: string | null; trust: number };
+
+function isSessionRow(value: unknown): value is SessionRow {
+  if (!value || typeof value !== "object") return false;
+  const row = value as { ip?: unknown; trust?: unknown };
+  return (row.ip === null || typeof row.ip === "string") && typeof row.trust === "number";
+}
+
+function recordSession(ip: string | null, trust: number): SessionMemo {
+  const current: SessionRow = { ip, trust };
+  try {
+    const parsed: unknown = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "[]");
+    const rows = Array.isArray(parsed) ? parsed.filter(isSessionRow) : [];
+    rows.push(current);
+    const kept = rows.slice(-12);
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(kept));
+    const ips = new Set(kept.map((row) => row.ip).filter((item): item is string => Boolean(item)));
+    return { runs: kept.length, ipChanges: Math.max(0, ips.size - 1) };
+  } catch {
+    return { runs: 1, ipChanges: 0 };
+  }
+}
+
+function abuseFrom(payload: EdgePayload | null): AbuseRecord {
+  const history = payload?.history;
+  if (!history || (history.source !== "none" && history.source !== "stopforumspam")) {
+    return { source: "none", appears: null, frequency: null, lastSeen: null, attempted: false };
+  }
+  return {
+    source: history.source,
+    appears: typeof history.appears === "boolean" ? history.appears : null,
+    frequency: typeof history.frequency === "number" ? history.frequency : null,
+    lastSeen: typeof history.lastSeen === "string" ? history.lastSeen : null,
+    attempted: Boolean(history.attempted),
+  };
+}
 
 type EdgeResult = { payload: EdgePayload | null; error: string | null };
 
@@ -28,6 +72,30 @@ function text(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+async function probe(name: string, url: string): Promise<Reachability> {
+  const started = performance.now();
+  try {
+    await fetch(url, { mode: "no-cors", cache: "no-store", signal: AbortSignal.timeout(5000) });
+    return { name, url, ok: true, ms: Math.round(performance.now() - started) };
+  } catch {
+    return { name, url, ok: false, ms: Math.round(performance.now() - started) };
+  }
+}
+
+async function udpHolder(ip: string): Promise<string | null> {
+  try {
+    const response = await fetch(`https://stat.ripe.net/data/prefix-overview/data.json?resource=${encodeURIComponent(ip)}`, {
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as { data?: { asns?: { holder?: string }[] } };
+    const holder = body.data?.asns?.[0]?.holder;
+    return holder?.trim() ? holder : null;
+  } catch {
+    return null;
+  }
 }
 
 async function loadEdge(): Promise<EdgeResult> {
@@ -108,10 +176,18 @@ function claimedFields(edge: EdgePayload | null, browser: BrowserReport): Field[
   ];
 }
 
+let runId = 0;
+
 async function run(): Promise<void> {
+  const id = ++runId;
   const status = document.querySelector("#status");
   if (status) status.textContent = "正在读取边缘与浏览器信号…";
-  const [edgeResult, browser] = await Promise.all([loadEdge(), collectBrowser()]);
+  const [edgeResult, browser, probes] = await Promise.all([
+    loadEdge(),
+    collectBrowser(),
+    Promise.all([probe("claude.ai", "https://claude.ai/"), probe("anthropic.com", "https://www.anthropic.com/")]),
+  ]);
+  if (id !== runId) return;
   const headers = edgeResult.payload?.headers ?? {};
   const score = scoreVisit({
     edge: edgeSnapshotFromApi(edgeResult.payload),
@@ -127,20 +203,42 @@ async function run(): Promise<void> {
     observed: {
       webdriver: browser.webdriver,
       webglRenderer: browser.webgl?.unmaskedRenderer ?? browser.webgl?.renderer ?? null,
-      hardwareConcurrency: browser.hardwareConcurrency,
-      maxTouchPoints: browser.maxTouchPoints,
       screenWidth: browser.screen.width,
       screenHeight: browser.screen.height,
       outerWidth: browser.window.outerWidth,
       outerHeight: browser.window.outerHeight,
       webrtcGlobalIps: browser.webrtc.globalIps,
+      webrtcCandidates: browser.webrtc.candidates.length,
+      webrtcError: browser.webrtc.error,
+      webrtcMdns: browser.webrtc.mdns,
+      canvasHash: browser.canvasHash,
+      audioHash: browser.audioHash,
     },
+    abuse: abuseFrom(edgeResult.payload),
   });
-  const statusText = edgeResult.error ? "边缘接口不可用，分数主要来自浏览器。" : "";
+  const udpIp = browser.webrtc.globalIps.find((item) => item !== score.exit.ip && isReputationLookupIp(item)) ?? null;
+  const holder = udpIp ? await udpHolder(udpIp) : null;
+  const renderer = browser.webgl?.unmaskedRenderer ?? browser.webgl?.renderer ?? null;
+  const webglHash = renderer ? await sha256(renderer) : null;
+  if (id !== runId) return;
+  const session = recordSession(score.exit.ip, score.trust.score);
   renderPage({
-    status: statusText,
-    edgeError: edgeResult.error,
+    status: edgeResult.error ? "边缘接口不可用，分数主要来自浏览器。" : "",
     score,
+    session,
+    intel: edgeResult.payload?.intel ?? null,
+    probes,
+    udpHolder: holder,
+    device: {
+      timezone: browser.timezone,
+      timezoneOffset: browser.timezoneOffset,
+      languages: browser.languages,
+      userAgent: browser.userAgent,
+      cookieEnabled: browser.cookieEnabled,
+      webglRenderer: renderer,
+      canvasHash: browser.canvasHash,
+      webglHash,
+    },
     observed: observedFields(edgeResult.payload, browser),
     claimed: claimedFields(edgeResult.payload, browser),
     raw: {
@@ -148,6 +246,7 @@ async function run(): Promise<void> {
       edgeError: edgeResult.error,
       browser,
       score,
+      session,
     },
   });
 }
