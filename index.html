@@ -8,7 +8,7 @@
     <title>cf-identity-check · 访问信号核对</title>
     <meta
       name="description"
-      content="对照 Cloudflare 边缘观测和浏览器声称的信号，给出仅供参考的启发式判断。"
+      content="伪装度、欺诈分，以及常见 AI 与地区限制服务的启发式状态。"
     />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
@@ -17,9 +17,6 @@
       <div class="top-copy">
         <p class="kicker">cf-identity-check</p>
         <h1>访问信号核对</h1>
-        <p class="lede">
-          一次普通访问会暴露的边缘位置、网络类型，以及浏览器自己报上来的系统、语言和时区。两边对照，只做启发式判断。
-        </p>
       </div>
       <div class="top-actions">
         <p class="pill">默认不落库</p>
@@ -28,25 +25,14 @@
     </header>
     <main id="app">
       <p id="status" role="status">正在读取边缘与浏览器信号…</p>
-      <section id="verdict" aria-live="polite"></section>
-      <div class="split">
-        <section id="observed"></section>
-        <section id="claimed"></section>
-      </div>
-      <section id="mismatches"></section>
-      <section id="raw"></section>
+      <div id="verdict"></div>
+      <div id="details"></div>
+      <div id="raw"></div>
     </main>
     <footer>
-      <p>
-        隐私：Worker 不写数据库、缓存或 Cookie。响应里不会带回 Cookie、Authorization 或 Cloudflare Access JWT。
-        页面会向公共 STUN 服务器要一次 WebRTC 候选，并在本地算 canvas / 音频哈希。探测本地存储时会写入一个键并立刻删掉。
-      </p>
-      <p>
-        免责声明：可用性展望只根据这次访问已经暴露的信号估计，不连接 YouTube 或 Claude，也不能说明那些服务真实是否可用，更不是绕过地区限制的方法。
-      </p>
-      <p class="en">
-        Heuristic only. The worker stores nothing. Cookie and Authorization are dropped. This page does not contact YouTube or Claude and is not a bypass.
-      </p>
+      <p>不落库。Cookie 和 Authorization 不回传。WebRTC 使用公共 STUN，存储探测写完即删。</p>
+      <p>分数和矩阵是启发式，不连接这些服务，也不是绕过地区限制的方法。</p>
+      <p class="en">Nothing stored. Cookie and Authorization are dropped. Heuristic only, not a bypass.</p>
     </footer>
     <noscript>需要启用 JavaScript 才能在浏览器里测量屏幕、WebGL 和时区。</noscript>
     <script type="module" src="/src/client/main.ts"></script>
