@@ -29,7 +29,7 @@ body {
 body, button { font-size: 16px; }
 
 .top, main, footer {
-  width: min(1040px, calc(100% - 2.5rem));
+  width: min(1120px, calc(100% - 2rem));
   margin-inline: auto;
 }
 
@@ -384,10 +384,80 @@ noscript {
   .radar-wrap { max-width: 280px; margin-inline: auto; }
 }
 
+.stack { display: grid; gap: 0.85rem; margin-top: 0.4rem; }
+.block, .trust-card, .region-card, .ip-card {
+  background: rgba(23, 30, 23, 0.78);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0.85rem 0.9rem 0.95rem;
+}
+.block h2, .trust-card h2, .region-card h2 {
+  margin: 0 0 0.65rem;
+  font-size: 1rem;
+}
+.ip-grid, .score-row, .pair, .checks, .scenes, .probes {
+  display: grid;
+  gap: 0.65rem;
+}
+.ip-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.score-row { grid-template-columns: minmax(240px, 320px) 1fr; }
+.pair { grid-template-columns: 1fr 1fr; }
+.checks { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.scenes { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0.75rem; }
+.ip-card h3, .check h3, .scene h3 { margin: 0; font-size: 0.82rem; color: var(--muted); }
+.ip-addr { margin: 0.35rem 0; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 1.02rem; font-weight: 650; overflow-wrap: anywhere; }
+.ip-card p, .region-card p, .block p { margin: 0.25rem 0 0; }
+.ip-card.is-muted { color: var(--muted); }
+.src, .kv small { display: block; margin-top: 0.2rem; color: var(--muted); font-size: 0.75rem; line-height: 1.35; }
+.trust-card { text-align: center; }
+.trust-gauge { position: relative; width: min(100%, 210px); margin: 0 auto; }
+.trust-gauge svg { width: 100%; height: auto; display: block; }
+.trust-face { position: absolute; inset: 0; display: grid; place-items: center; }
+.trust-face strong { font-size: 3.4rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.trust-card.tone-ok .trust-face strong, .trust-card.tone-ok .dial-value { color: var(--ok); }
+.trust-card.tone-warn .trust-face strong { color: var(--warn); }
+.trust-card.tone-bad .trust-face strong { color: var(--bad); }
+.scale, .probes { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.25rem; margin-top: 0.35rem; color: var(--muted); font-size: 0.75rem; }
+.scale span:first-child { text-align: left; }
+.scale span:last-child { text-align: right; }
+.scale-bar { height: 6px; margin: 0.35rem 0 0.45rem; border-radius: 999px; background: #243024; overflow: hidden; }
+.scale-bar span { display: block; height: 100%; background: var(--lime); }
+.trust-card.tone-warn .scale-bar span { background: var(--warn); }
+.trust-card.tone-bad .scale-bar span { background: var(--bad); }
+.trust-status { font-size: 1.05rem; }
+.big { margin: 0.2rem 0; font-size: 1.8rem; font-weight: 650; }
+.tone-ok .big, .check.tone-ok p { color: var(--ok); }
+.tone-bad .big, .check.tone-bad p { color: var(--bad); }
+.tone-warn .big { color: var(--warn); }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.45rem 0.8rem; margin: 0; }
+.kv { min-width: 0; }
+.kv dt { color: var(--muted); font-size: 0.75rem; }
+.kv dd { margin: 0.1rem 0 0; overflow-wrap: anywhere; }
+.check, .scene, .probe {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.55rem 0.6rem;
+  min-width: 0;
+}
+.check p, .scene p { margin: 0.25rem 0 0; font-weight: 650; }
+.probes { grid-template-columns: 1fr 1fr; }
+.probe { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; }
+.stars { letter-spacing: 0.12em; }
+.stars i { display: inline-block; width: 0.55rem; height: 0.55rem; margin-right: 0.18rem; border-radius: 99px; background: #2c3a2c; }
+.stars i.on { background: var(--lime); }
+.traffic { margin-top: 0.55rem; }
+.history { display: flex; flex-wrap: wrap; gap: 0.4rem 0.7rem; align-items: baseline; padding-top: 0.2rem; }
+.history h2 { margin: 0; font-size: 0.95rem; }
+.history p { margin: 0; color: var(--muted); font-size: 0.85rem; }
+
+@media (max-width: 900px) {
+  .ip-grid, .score-row, .pair, .checks { grid-template-columns: 1fr 1fr; }
+  .grid, .scenes, .probes { grid-template-columns: 1fr; }
+}
 @media (max-width: 640px) {
   .top { display: grid; align-items: start; }
-  .top, main, footer { width: min(1040px, calc(100% - 1.4rem)); }
-  .cards, .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .trust-face strong { font-size: 3.4rem; }
-  .panel { padding: 0.9rem 0.8rem 0.8rem; }
+  .top, main, footer { width: min(1120px, calc(100% - 1.2rem)); }
+  .ip-grid, .score-row, .pair, .checks { grid-template-columns: 1fr; }
+  .trust-face strong { font-size: 3rem; }
 }

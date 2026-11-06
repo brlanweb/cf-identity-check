@@ -10,13 +10,21 @@ English notes are below the Chinese sections.
 
 ## 首页看什么
 
-打开就能看到：
+打开就能看到，顺序和常见的 Claude 出口自查页接近：
 
-1. **Claude AI Trust Score**（0–100）大号环。越高越像干净、自洽的出口。
-2. **纯净度**、**风险**、**属性**（住宅 / 机房 / 原生）。机房和 VPN 词会压低纯净度和信任分。住宅且时区、UDP 与出口一致时，再标一枚「原生」。
-3. 五个信号：**DNS**、**UDP**、**时区**、**指纹**、**安全性**。雷达只画测得到的项。
-4. **历史**：本次标签页里的重复测量；若出口 IP 是公网地址，Worker 会问一次 [StopForumSpam](https://www.stopforumspam.org/)。内网、回环、查不到或失败都显示「无历史库」，不编造滥用分。StopForumSpam 不是 Claude 的记录。
-5. 评分依据、信号明细、原始 JSON 默认折叠。
+1. **出口 IP 对照**：中国出口 IPv4（不是中国就明确写非中国出口，不另造一条 IP）、Cloudflare 出口、Claude AI 出口。后两张是同一次 `CF-Connecting-IP`，页面写明本站没有单独再连 claude.ai 取第二条地址。
+2. **Claude AI Trust Score**（0–100），刻度从高危到可信，并给出「良好 / 该 IP 存在轻微风险」这类状态。
+3. **Claude 支持地区**、出口属性、安全检测（VPN / 代理 / Tor / 机器人 / 滥用记录）。
+4. **可用性**：浏览器对 claude.ai 和 anthropic.com 的计时，不是官方状态。
+5. **DNS**：浏览器看不到解析器，状态是「无法判断」，不伪造 DNS 出口。
+6. **WebRTC UDP**、设备信息（时区、语言、系统、Cookie、WebGL、Canvas）。
+7. **使用场景、服务商 / ASN、技术指标、IP 情报、风险深度**。RDAP、RIPEstat、反向 DNS、RPKI 能查到才填；蜜罐、带宽和端口扫描保持「无法查询」或不做。
+
+机房和 VPN 词会压低纯净度和信任分。住宅且时区、UDP 与出口一致时，属性里再标「原生」。
+
+**历史**：本次标签页里的重复测量；公网出口 IP 会问一次 [StopForumSpam](https://www.stopforumspam.org/)。查不到是「无法查询」或「无记录」，不编造滥用分。StopForumSpam 不是 Claude 的记录。
+
+评分依据、信号明细、原始 JSON 默认折叠。
 
 各项大致是：
 
@@ -108,27 +116,27 @@ npm run deploy
 
 # English
 
-`cf-identity-check` scores the **current exit IP** — what an edge request and the browser already expose — as a heuristic **Claude AI Trust Score**. It is not affiliated with Anthropic and it does not contact Claude.
+`cf-identity-check` scores the **current exit IP** as a heuristic **Claude AI Trust Score**. It is not affiliated with Anthropic. Availability timings in the browser are not an official status page.
 
 Nothing is stored on the server by default.
 
 ## What the page shows
 
-A large 0–100 trust gauge, plus purity (纯净度), risk (风险), and an attribute badge: residential (住宅), datacenter (机房), or native ISP (原生). DNS, UDP, timezone, fingerprint, and security sit in score cards. The radar draws only signals that were actually measured.
+Three exit cards: China IPv4 only when the edge country is China, otherwise a clear “not a China exit” card; the Cloudflare exit from `CF-Connecting-IP`; and the same address again as the Claude exit, with a note that this site does not open a second path to claude.ai.
 
-DNS is **unavailable**: browsers do not expose the system resolver or DoH, and `request.cf` has no resolver field. That axis is not part of the trust score. UDP compares WebRTC/STUN public addresses with `CF-Connecting-IP`. Timezone compares the browser zone with edge country and timezone. Fingerprint checks UA, Client Hints, platform, language, screen, and whether canvas, WebGL, and audio samples exist. Security covers `webdriver`, headless or automation tokens, software renderers, and those spoof mismatches.
+The trust gauge runs from 高危 to 可信. Next to it: supported-region heuristic, IP attributes, and VPN / proxy / Tor / crawler / abuse checks. DNS stays **无法判断** because the browser does not expose the resolver. WebRTC UDP is compared with the edge IP. Device rows cover timezone, language, OS, cookie, WebGL, and canvas.
 
-Weights are purity 30%, UDP 16%, timezone 18%, fingerprint 14%, security 22%, then penalties for datacenter, VPN, Tor, WebRTC leaks, and automation. A country where Claude is commonly reported as unavailable is mentioned only in the collapsed notes and does **not** change purity. Cloudflare `colo` is the edge datacenter, not the user's network type.
+Lower sections cover scene estimates (labeled 估算), ASN data from RDAP and RIPEstat when those lookups return, bogon and PTR, and IP intel. Honeypot lists, bandwidth, and port scans stay unavailable. RPKI is shown only when RIPEstat returns it. Registration country versus edge country is the only broadcast-versus-native signal; if RDAP has no country, the label is 无法判断.
 
-History is the current tab's session count, plus one StopForumSpam lookup when the exit IP is a public address. Loopback, private ranges, and failed lookups are labeled 无历史库. The page does not invent abuse scores. StopForumSpam is not Claude's database.
+Weights are still purity 30%, UDP 16%, timezone 18%, fingerprint 14%, security 22%. A commonly unsupported country changes the 支持地区 badge and the scene caps. It does not by itself zero the purity of a residential network.
 
 ## Disclaimer
 
-Heuristic only. ASN word lists are static. There is no RIR allocation database, so "native" means "not on the datacenter list," and the note says so. This project does not help bypass regional or platform controls.
+Heuristic only. ASN word lists are static. “Native” from the word list is not an RIR allocation proof. This project does not help bypass regional or platform controls.
 
 ## Architecture
 
-Static files are built with Vite and served as Workers Assets. `GET /api/edge` is an Hono handler. It reads `request.cf` and request headers, drops `Cookie`, `Authorization`, `Proxy-Authorization`, `Set-Cookie`, and `CF-Access-Jwt-Assertion`, optionally queries StopForumSpam, and returns JSON. It does not write a database, KV, cookies, or request logs. Scoring runs in the browser. Session repeats live in `sessionStorage` only.
+Static files are built with Vite and served as Workers Assets. `GET /api/edge` reads `request.cf` and request headers, drops credential headers, and for a public exit IP queries StopForumSpam, RDAP, RIPEstat, and a PTR via DNS-over-HTTPS. It does not write a database, KV, cookies, or request logs. Scoring runs in the browser. Session repeats live in `sessionStorage` only.
 
 `wrangler.jsonc` sets `run_worker_first` for `/api/*`. The Cloudflare Vite plugin fills `assets.directory` during build.
 
@@ -155,7 +163,7 @@ npm run deploy
 
 ## Privacy
 
-The Worker stores nothing. `/api/edge` is `Cache-Control: no-store`. Credential headers are omitted. When the exit IP is public, that IP is sent once to StopForumSpam; the result is not stored. Loopback and private addresses are not sent. Canvas and audio hashes stay in the browser. WebRTC uses `stun.cloudflare.com` and `stun.l.google.com`. The storage probe writes `__cf_identity_check_probe` and deletes it immediately. Session measurement counts stay in `sessionStorage` until the tab closes.
+The Worker stores nothing. `/api/edge` is `Cache-Control: no-store`. Credential headers are omitted. When the exit IP is public, that IP is sent to StopForumSpam, RDAP, RIPEstat, and a PTR lookup. Results are not stored. Loopback and private addresses are not sent. Canvas and audio hashes stay in the browser. WebRTC uses `stun.cloudflare.com` and `stun.l.google.com`. The storage probe writes `__cf_identity_check_probe` and deletes it immediately. Session measurement counts stay in `sessionStorage` until the tab closes.
 
 ## License
 

@@ -19,6 +19,7 @@ export type EdgeSnapshot = {
   asn: string | null;
   colo: string | null;
   city: string | null;
+  region: string | null;
 };
 
 export type ScoreInput = {
@@ -68,10 +69,39 @@ export type SignalCard = {
   note: string;
 };
 
+export type CheckState = "未发现" | "疑似" | "无记录" | "有公开记录" | "无法查询";
+
+export type SceneAdvice = "推荐" | "一般" | "不推荐";
+
 export type ScoreResult = {
-  trust: { score: number; tone: Tone; band: "较高" | "中等" | "偏低" | "较低" };
+  trust: {
+    score: number;
+    tone: Tone;
+    band: "较高" | "中等" | "偏低" | "较低";
+    headline: "良好" | "一般" | "高危";
+    detail: string;
+  };
   purity: { score: number; tone: Tone; band: "高" | "中" | "低" };
   risk: { score: number | null; tone: Tone; band: "低" | "中" | "高" | "未知" };
+  regionSupport: { state: "正常" | "受限" | "无法判断"; note: string };
+  securityChecks: {
+    vpn: { state: CheckState; note: string };
+    proxy: { state: CheckState; note: string };
+    tor: { state: CheckState; note: string };
+    crawler: { state: CheckState; note: string };
+    abuse: { state: CheckState; note: string };
+  };
+  scenes: {
+    ai: { score: number; advice: SceneAdvice };
+    social: { score: number; advice: SceneAdvice };
+    tiktok: { score: number; advice: SceneAdvice };
+  };
+  traffic: { human: number; machine: number; badge: "人类为主" | "机器偏多"; source: "估算" };
+  deviceHints: {
+    timezone: "一致" | "不一致" | "无法对照";
+    language: "一致" | "不一致" | "无法对照";
+    languageNote: string;
+  };
   attribute: {
     kind: AttributeKind;
     label: "住宅" | "机房" | "原生" | "未知";
@@ -97,6 +127,8 @@ export type ScoreResult = {
     asOrganization: string | null;
     asn: string | null;
     colo: string | null;
+    country: string | null;
+    region: string | null;
   };
   summary: string;
   notes: string[];
@@ -104,6 +136,20 @@ export type ScoreResult = {
 };
 
 const TRUST_WEIGHT = { purity: 0.3, udp: 0.16, timezone: 0.18, fingerprint: 0.14, security: 0.22 };
+
+const PROXY_HINTS = [
+  "proxy",
+  "luminati",
+  "bright data",
+  "brightdata",
+  "oxylabs",
+  "iproyal",
+  "smartproxy",
+  "geosurf",
+  "netnut",
+  "soax",
+  "packetstream",
+];
 
 const VPN_HINTS = [
   "mullvad",
@@ -313,6 +359,19 @@ const TZ_COUNTRY: Record<string, string> = {
 
 /** Countries often absent from Claude's published coverage. Informational only — not part of purity. */
 const REGION_NOTE = new Set(["CN", "RU", "BY", "IR", "KP", "SY", "CU"]);
+
+const COUNTRY_LANG: Record<string, string> = {
+  US: "en", GB: "en", AU: "en", CA: "en", NZ: "en", IE: "en",
+  CN: "zh", TW: "zh", HK: "zh", MO: "zh",
+  JP: "ja", KR: "ko", DE: "de", FR: "fr", ES: "es", PT: "pt", BR: "pt",
+  RU: "ru", NL: "nl", IT: "it", PL: "pl", TR: "tr", VN: "vi", TH: "th", ID: "id",
+};
+
+const LANG_ZH: Record<string, string> = {
+  en: "英语", zh: "中文", ja: "日语", ko: "韩语", de: "德语", fr: "法语", es: "西班牙语",
+  pt: "葡萄牙语", ru: "俄语", nl: "荷兰语", it: "意大利语", pl: "波兰语", tr: "土耳其语",
+  vi: "越南语", th: "泰语", id: "印尼语",
+};
 
 const COUNTRY_ZH: Record<string, string> = {
   CN: "中国",
@@ -661,7 +720,7 @@ function udpBadge(score: number): { tone: Tone; badge: string } {
   return { tone: "bad", badge: "不一致" };
 }
 
-function trustBand(score: number): ScoreResult["trust"] {
+function trustBand(score: number): Omit<ScoreResult["trust"], "headline" | "detail"> {
   if (score >= 80) return { score, tone: "ok", band: "较高" };
   if (score >= 60) return { score, tone: "warn", band: "中等" };
   if (score >= 40) return { score, tone: "bad", band: "偏低" };
@@ -744,6 +803,43 @@ function summarize(input: {
   return "没有 ASN 组织名，纯净度保守估计。";
 }
 
+function looksLikeProxy(organization: string | null): boolean {
+  const text = (organization ?? "").toLowerCase();
+  return PROXY_HINTS.some((hint) => text.includes(hint));
+}
+
+function looksAutomated(input: ScoreInput): boolean {
+  const ua = input.claimed.userAgent.toLowerCase();
+  return input.observed.webdriver || /headless|phantomjs|selenium|puppeteer|playwright|crawler|spider|\bbot\b/.test(ua);
+}
+
+function trustPhrase(score: number): { headline: ScoreResult["trust"]["headline"]; detail: string } {
+  if (score >= 80) return { headline: "良好", detail: "主要信号整齐" };
+  if (score >= 60) return { headline: "良好", detail: "该 IP 存在轻微风险" };
+  return score >= 40 ? { headline: "一般", detail: "该 IP 风险偏高" } : { headline: "高危", detail: "该 IP 风险较高" };
+}
+
+function sceneFor(trustScore: number, cap: number): { score: number; advice: SceneAdvice } {
+  const rounded = Math.round(trustScore / 20);
+  const score = Math.max(1, Math.min(5, Math.min(cap, rounded || 1)));
+  const advice: SceneAdvice = score >= 4 ? "推荐" : score <= 2 ? "不推荐" : "一般";
+  return { score, advice };
+}
+
+function languageHint(country: string, languages: string[]): { state: "一致" | "不一致" | "无法对照"; note: string } {
+  const expected = COUNTRY_LANG[country];
+  const actual = primaryLanguage(languages[0]);
+  if (!country || country === "XX" || country === "T1" || !expected) {
+    return { state: "无法对照", note: "没有这个边缘国家的常用语言对照。" };
+  }
+  if (!actual) return { state: "无法对照", note: "浏览器没有给出语言。" };
+  const expectedName = LANG_ZH[expected] ?? expected;
+  if (actual === expected) {
+    return { state: "一致", note: `浏览器主语言和${countryLabel(country)}常见的${expectedName}一致。` };
+  }
+  return { state: "不一致", note: `浏览器主语言是 ${actual}，${countryLabel(country)}更常见的是${expectedName}。` };
+}
+
 export function scoreVisit(input: ScoreInput): ScoreResult {
   const organization = input.edge?.asOrganization ?? null;
   const country = input.edge?.country?.toUpperCase() ?? "";
@@ -779,7 +875,8 @@ export function scoreVisit(input: ScoreInput): ScoreResult {
   const nativePath = kind === "residential" && hasEdge && !udp.leak && !udp.partial && !geo.conflict && !tor && !vpn;
   const abuse = input.abuse ?? EMPTY_ABUSE;
   const spam = spamAdjust(abuse);
-  const automated = security.hits.some((hit) => hit.includes("webdriver") || hit.includes("无头") || hit.includes("自动化字样"));
+  const automated = looksAutomated(input) || security.hits.some((hit) => hit.includes("webdriver") || hit.includes("无头") || hit.includes("自动化字样"));
+  const proxy = looksLikeProxy(organization);
 
   const weighted =
     purity * TRUST_WEIGHT.purity +
@@ -889,11 +986,62 @@ export function scoreVisit(input: ScoreInput): ScoreResult {
   const risk = hasEdge
     ? { score: riskScore, ...riskBand(riskScore) }
     : { score: null, tone: "neutral" as const, band: "未知" as const };
+  const phrase = trustPhrase(trustScore);
+  const aiCap = tor ? 1 : automated || vpn || kind === "datacenter" || REGION_NOTE.has(country) ? 2 : 5;
+  const socialCap = tor || vpn || kind === "datacenter" ? 1 : automated || REGION_NOTE.has(country) ? 2 : 5;
+  const language = languageHint(country, input.claimed.languages);
+  const abuseState: CheckState =
+    abuse.source === "stopforumspam" && abuse.appears === true
+      ? "有公开记录"
+      : abuse.source === "stopforumspam" && abuse.appears === false
+        ? "无记录"
+        : "无法查询";
 
   return {
-    trust: trustBand(trustScore),
+    trust: { ...trustBand(trustScore), ...phrase },
     purity: purityBand(purity),
     risk,
+    regionSupport: !hasEdge || !country || country === "XX"
+      ? { state: "无法判断", note: "没有可靠的边缘国家，不能对照公开资料里的 Claude 服务范围。" }
+      : REGION_NOTE.has(country)
+        ? { state: "受限", note: `公开资料里，${countryLabel(country)}经常不在 Claude 的服务范围。这是静态启发式，不是官方名单。` }
+        : { state: "正常", note: `${countryLabel(country)}不在这份常见受限清单里。清单会过时，也不是 Anthropic 的官方范围。` },
+    securityChecks: {
+      vpn: vpn
+        ? { state: "疑似", note: "组织名里有 VPN 关键词。" }
+        : { state: "未发现", note: "组织名不在内置 VPN 词表里。没有单独的 VPN 情报库。" },
+      proxy: proxy
+        ? { state: "疑似", note: "组织名里有代理服务关键词。" }
+        : { state: "未发现", note: "组织名不在内置代理词表里。机房地址不会自动算作代理。" },
+      tor: tor
+        ? { state: "疑似", note: "边缘国家或组织名像 Tor 出口。" }
+        : { state: "未发现", note: "没有看到 Tor 出口标记。" },
+      crawler: automated
+        ? { state: "疑似", note: "浏览器带有 webdriver、无头或爬虫字样。" }
+        : { state: "未发现", note: "没有看到 webdriver、无头浏览器或爬虫字样。" },
+      abuse:
+        abuseState === "有公开记录"
+          ? { state: abuseState, note: historyText.note }
+          : abuseState === "无记录"
+            ? { state: abuseState, note: "StopForumSpam 未见此 IP。这不是完整滥用库。" }
+            : { state: abuseState, note: "没有查到公开滥用库，不编造记录。" },
+    },
+    scenes: {
+      ai: sceneFor(trustScore, aiCap),
+      social: sceneFor(trustScore, socialCap),
+      tiktok: sceneFor(trustScore, socialCap),
+    },
+    traffic: automated
+      ? { human: 15, machine: 85, badge: "机器偏多", source: "估算" }
+      : (input.observed.webglRenderer ?? "").toLowerCase().includes("swiftshader") ||
+          (input.observed.webglRenderer ?? "").toLowerCase().includes("llvmpipe")
+        ? { human: 60, machine: 40, badge: "机器偏多", source: "估算" }
+        : { human: 90, machine: 10, badge: "人类为主", source: "估算" },
+    deviceHints: {
+      timezone: !hasEdge || (!input.edge?.timezone && !input.edge?.country) ? "无法对照" : geo.conflict ? "不一致" : "一致",
+      language: language.state,
+      languageNote: language.note,
+    },
     attribute: {
       kind,
       label: ATTR_LABEL[kind],
@@ -918,6 +1066,8 @@ export function scoreVisit(input: ScoreInput): ScoreResult {
       asOrganization: organization,
       asn: input.edge?.asn ?? null,
       colo: input.edge?.colo ?? null,
+      country: country || null,
+      region: input.edge?.region ?? null,
     },
     summary: summarize({
       hasEdge,
@@ -959,6 +1109,7 @@ export function edgeSnapshotFromApi(payload: {
     asn: asText(cf.asn),
     colo: asText(cf.colo),
     city: asText(cf.city),
+    region: asText(cf.region),
   };
 }
 

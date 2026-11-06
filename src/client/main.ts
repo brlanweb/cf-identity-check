@@ -1,8 +1,10 @@
 import "./styles.css";
 import { collectBrowser, type BrowserReport } from "./collect.ts";
-import { shortHash } from "./hash.ts";
-import { renderPage, type Field, type SessionMemo } from "./render.ts";
+import { sha256, shortHash } from "./hash.ts";
+import { renderPage, type Field, type Reachability, type SessionMemo } from "./render.ts";
 import type { AbuseRecord } from "../shared/history.ts";
+import { isReputationLookupIp } from "../shared/history.ts";
+import type { IpIntel } from "../shared/intel.ts";
 import { headerValue } from "../shared/redact.ts";
 import {
   claimedFromSignals,
@@ -20,6 +22,7 @@ type EdgePayload = {
   headers: Record<string, string>;
   omittedHeaders: string[];
   history?: AbuseRecord;
+  intel?: IpIntel;
   collectedAt: string;
   privacy: string;
 };
@@ -69,6 +72,30 @@ function text(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+async function probe(name: string, url: string): Promise<Reachability> {
+  const started = performance.now();
+  try {
+    await fetch(url, { mode: "no-cors", cache: "no-store", signal: AbortSignal.timeout(5000) });
+    return { name, url, ok: true, ms: Math.round(performance.now() - started) };
+  } catch {
+    return { name, url, ok: false, ms: Math.round(performance.now() - started) };
+  }
+}
+
+async function udpHolder(ip: string): Promise<string | null> {
+  try {
+    const response = await fetch(`https://stat.ripe.net/data/prefix-overview/data.json?resource=${encodeURIComponent(ip)}`, {
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as { data?: { asns?: { holder?: string }[] } };
+    const holder = body.data?.asns?.[0]?.holder;
+    return holder?.trim() ? holder : null;
+  } catch {
+    return null;
+  }
 }
 
 async function loadEdge(): Promise<EdgeResult> {
@@ -155,7 +182,11 @@ async function run(): Promise<void> {
   const id = ++runId;
   const status = document.querySelector("#status");
   if (status) status.textContent = "正在读取边缘与浏览器信号…";
-  const [edgeResult, browser] = await Promise.all([loadEdge(), collectBrowser()]);
+  const [edgeResult, browser, probes] = await Promise.all([
+    loadEdge(),
+    collectBrowser(),
+    Promise.all([probe("claude.ai", "https://claude.ai/"), probe("anthropic.com", "https://www.anthropic.com/")]),
+  ]);
   if (id !== runId) return;
   const headers = edgeResult.payload?.headers ?? {};
   const score = scoreVisit({
@@ -185,12 +216,29 @@ async function run(): Promise<void> {
     },
     abuse: abuseFrom(edgeResult.payload),
   });
-  const session = recordSession(score.exit.ip, score.trust.score);
+  const udpIp = browser.webrtc.globalIps.find((item) => item !== score.exit.ip && isReputationLookupIp(item)) ?? null;
+  const holder = udpIp ? await udpHolder(udpIp) : null;
+  const renderer = browser.webgl?.unmaskedRenderer ?? browser.webgl?.renderer ?? null;
+  const webglHash = renderer ? await sha256(renderer) : null;
   if (id !== runId) return;
+  const session = recordSession(score.exit.ip, score.trust.score);
   renderPage({
     status: edgeResult.error ? "边缘接口不可用，分数主要来自浏览器。" : "",
     score,
     session,
+    intel: edgeResult.payload?.intel ?? null,
+    probes,
+    udpHolder: holder,
+    device: {
+      timezone: browser.timezone,
+      timezoneOffset: browser.timezoneOffset,
+      languages: browser.languages,
+      userAgent: browser.userAgent,
+      cookieEnabled: browser.cookieEnabled,
+      webglRenderer: renderer,
+      canvasHash: browser.canvasHash,
+      webglHash,
+    },
     observed: observedFields(edgeResult.payload, browser),
     claimed: claimedFields(edgeResult.payload, browser),
     raw: {

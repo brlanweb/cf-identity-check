@@ -20,6 +20,7 @@ function visit(overrides: {
           asn: "7922",
           colo: "EWR",
           city: "New York",
+          region: "New York",
           ...overrides.edge,
         };
   return {
@@ -91,6 +92,15 @@ describe("scoreVisit", () => {
     assert.match(result.summary, /住宅/);
     assert.equal(result.exit.ip, "203.0.113.10");
     assert.equal(result.exit.asn, "7922");
+    assert.equal(result.trust.headline, "良好");
+    assert.equal(result.trust.detail, "主要信号整齐");
+    assert.equal(result.regionSupport.state, "正常");
+    assert.equal(result.scenes.ai.advice, "推荐");
+    assert.equal(result.scenes.ai.score, 5);
+    assert.equal(result.securityChecks.vpn.state, "未发现");
+    assert.equal(result.securityChecks.abuse.state, "无法查询");
+    assert.equal(result.traffic.badge, "人类为主");
+    assert.equal(result.traffic.source, "估算");
   });
 
   it("does not punish a consistent mainland China residential exit in the trust score", () => {
@@ -111,6 +121,8 @@ describe("scoreVisit", () => {
     assert.equal(cn.attribute.label, "住宅");
     assert.equal(cn.attribute.native, true);
     assert.equal(cn.purity.band, "高");
+    assert.equal(cn.regionSupport.state, "受限");
+    assert.equal(cn.scenes.ai.advice, "不推荐");
     assert.ok(cn.notes.some((note) => note.includes("不计入纯净度")));
     assert.equal(cn.summary.includes("无法"), false);
   });
@@ -133,6 +145,10 @@ describe("scoreVisit", () => {
     assert.equal(result.risk.score, 32);
     assert.equal(result.risk.band, "中");
     assert.match(result.summary, /机房/);
+    assert.equal(result.trust.headline, "良好");
+    assert.equal(result.trust.detail, "该 IP 存在轻微风险");
+    assert.equal(result.scenes.ai.advice, "不推荐");
+    assert.equal(result.scenes.tiktok.score, 1);
   });
 
   it("lowers a VPN ASN further than a generic cloud ASN", () => {
@@ -143,6 +159,7 @@ describe("scoreVisit", () => {
     assert.equal(vpn.purity.score, 12);
     assert.equal(vpn.trust.score, 54);
     assert.equal(vpn.risk.score, 44);
+    assert.equal(vpn.securityChecks.vpn.state, "疑似");
     assert.ok(vpn.purity.score < cloud.purity.score);
     assert.ok(vpn.trust.score < cloud.trust.score);
   });
@@ -187,6 +204,9 @@ describe("scoreVisit", () => {
     assert.equal(result.risk.score, 70);
     assert.equal(result.risk.band, "高");
     assert.match(result.summary, /自动化/);
+    assert.equal(result.securityChecks.crawler.state, "疑似");
+    assert.equal(result.traffic.badge, "机器偏多");
+    assert.equal(result.traffic.human, 15);
   });
 
   it("caps trust for a headless user agent", () => {
@@ -291,6 +311,7 @@ describe("scoreVisit", () => {
     assert.equal(result.history.label, "无公开记录");
     assert.equal(result.trust.score, 96);
     assert.equal(result.risk.score, 0);
+    assert.equal(result.securityChecks.abuse.state, "无记录");
   });
 
   it("applies a real StopForumSpam hit without calling it a Claude record", () => {
@@ -312,6 +333,7 @@ describe("scoreVisit", () => {
     assert.equal(result.trust.score, 84);
     assert.equal(result.risk.score, 32);
     assert.equal(result.risk.band, "中");
+    assert.equal(result.securityChecks.abuse.state, "有公开记录");
   });
 
   it("leaves DNS unscored even when every other signal is present", () => {
