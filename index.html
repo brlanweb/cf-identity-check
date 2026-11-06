@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#10140f" />
+    <meta name="theme-color" content="#141820" />
     <meta name="color-scheme" content="dark" />
     <title>Claude AI 信任检查 · 出口 IP</title>
     <meta
@@ -24,8 +24,21 @@
       </div>
     </header>
     <main id="app">
-      <p id="status" role="status">正在读取边缘与浏览器信号…</p>
-      <div id="verdict"></div>
+      <p id="status" class="is-loading" role="status">正在读取边缘与浏览器信号…</p>
+      <div id="verdict" aria-busy="true">
+        <div class="stack skeleton" aria-hidden="true">
+          <div class="skel skel-hero"></div>
+          <div class="skel-grid three">
+            <div class="skel"></div>
+            <div class="skel"></div>
+            <div class="skel"></div>
+          </div>
+          <div class="skel-grid two">
+            <div class="skel"></div>
+            <div class="skel"></div>
+          </div>
+        </div>
+      </div>
       <div id="details"></div>
       <div id="raw"></div>
     </main>

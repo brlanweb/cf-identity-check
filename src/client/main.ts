@@ -181,7 +181,10 @@ let runId = 0;
 async function run(): Promise<void> {
   const id = ++runId;
   const status = document.querySelector("#status");
-  if (status) status.textContent = "正在读取边缘与浏览器信号…";
+  if (status) {
+    status.textContent = "正在读取边缘与浏览器信号…";
+    status.className = "is-loading";
+  }
   const [edgeResult, browser, probes] = await Promise.all([
     loadEdge(),
     collectBrowser(),
