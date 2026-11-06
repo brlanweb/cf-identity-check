@@ -3,23 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0c0f0c" />
+    <meta name="theme-color" content="#10140f" />
     <meta name="color-scheme" content="dark" />
-    <title>cf-identity-check · 访问信号核对</title>
+    <title>Claude AI 信任检查 · 出口 IP</title>
     <meta
       name="description"
-      content="伪装度、欺诈分，以及常见 AI 与地区限制服务的启发式状态。"
+      content="查看当前出口 IP 的 Claude AI Trust Score、纯净度、风险、住宅/机房/原生属性，以及 DNS、UDP、时区、指纹和安全性。"
     />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
   <body>
     <header class="top">
       <div class="top-copy">
-        <p class="kicker">cf-identity-check</p>
-        <h1>访问信号核对</h1>
+        <p class="kicker">当前访问的出口 IP</p>
+        <h1>Claude AI 信任检查</h1>
       </div>
       <div class="top-actions">
-        <p class="pill">默认不落库</p>
+        <p class="pill">服务器不落库</p>
         <button type="button" id="rerun">重新测量</button>
       </div>
     </header>
@@ -30,11 +30,10 @@
       <div id="raw"></div>
     </main>
     <footer>
-      <p>不落库。Cookie 和 Authorization 不回传。WebRTC 使用公共 STUN，存储探测写完即删。</p>
-      <p>分数和矩阵是启发式，不连接这些服务，也不是绕过地区限制的方法。</p>
-      <p class="en">Nothing stored. Cookie and Authorization are dropped. Heuristic only, not a bypass.</p>
+      <p>服务器不落库。Cookie 和 Authorization 不回传。会话次数只留在本标签页。</p>
+      <p>信任分是启发式，与 Anthropic 无关。公网出口 IP 会向 StopForumSpam 查一次；查不到就显示无历史库。</p>
     </footer>
-    <noscript>需要启用 JavaScript 才能在浏览器里测量屏幕、WebGL 和时区。</noscript>
+    <noscript>需要启用 JavaScript 才能测量时区、WebRTC 和指纹。</noscript>
     <script type="module" src="/src/client/main.ts"></script>
   </body>
 </html>

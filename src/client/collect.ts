@@ -62,6 +62,7 @@ export type BrowserReport = {
     candidates: string[];
     ips: string[];
     globalIps: string[];
+    mdns: boolean;
     error: string | null;
   };
   permissions: Record<string, string>;
@@ -221,6 +222,7 @@ function collectWebRtc(): Promise<BrowserReport["webrtc"]> {
         candidates,
         ips: list,
         globalIps: list.filter(isGlobalIp),
+        mdns: candidates.some((candidate) => candidate.includes(".local")),
         error,
       });
     };

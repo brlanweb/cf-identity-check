@@ -2,7 +2,7 @@
   "name": "cf-identity-check",
   "version": "1.0.0",
   "private": true,
-  "description": "Cloudflare Workers page that compares edge observations with browser-claimed signals.",
+  "description": "Cloudflare Workers page that scores the current exit IP with a Claude-style trust check.",
   "license": "MIT",
   "type": "module",
   "repository": {

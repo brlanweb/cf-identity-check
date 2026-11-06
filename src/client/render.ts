@@ -1,5 +1,4 @@
-import type { Axis, RiskScore, ScoreResult } from "../shared/score.ts";
-import { STATUS_LABEL, type ServiceStatus } from "../shared/services.ts";
+import type { ScoreResult, SignalCard } from "../shared/score.ts";
 
 export type Field = {
   section: string;
@@ -8,11 +7,9 @@ export type Field = {
   source: string;
 };
 
-const RING_LABEL: Record<string, string> = {
-  network: "住宅",
-  geo: "地理",
-  client: "客户端",
-  automation: "干净",
+export type SessionMemo = {
+  runs: number;
+  ipChanges: number;
 };
 
 function escapeHtml(value: string): string {
@@ -23,46 +20,100 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
-function goodness(axis: Axis): number {
-  const raw = axis.id === "automation" ? 100 - axis.score : axis.score;
-  return Math.max(0, Math.min(100, Math.round(raw)));
+function formatAsn(asn: string | null): string | null {
+  if (!asn) return null;
+  return /^[0-9]+$/.test(asn) ? `AS${asn}` : asn;
 }
 
-function toneFor(score: number): RiskScore["tone"] {
-  if (score >= 75) return "ok";
-  if (score >= 50) return "warn";
-  return "bad";
-}
-
-function dial(score: number, tone: RiskScore["tone"], label: string): string {
-  const radius = 48;
+function dial(score: number): string {
+  const radius = 46;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference * (1 - score / 100);
-  return `<svg class="dial tone-${tone}" viewBox="0 0 120 120" role="img" aria-label="${escapeHtml(label)} ${score}">
+  return `<svg class="dial" viewBox="0 0 120 120" aria-hidden="true">
     <circle class="dial-track" cx="60" cy="60" r="${radius}"></circle>
     <circle class="dial-value" cx="60" cy="60" r="${radius}" stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"></circle>
-    <text class="dial-num" x="60" y="68" text-anchor="middle">${score}</text>
   </svg>`;
 }
 
-function miniDial(score: number, tone: RiskScore["tone"], label: string): string {
-  const radius = 16;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - score / 100);
-  return `<svg class="mini tone-${tone}" viewBox="0 0 40 40" aria-hidden="true">
-    <circle class="dial-track" cx="20" cy="20" r="${radius}"></circle>
-    <circle class="dial-value" cx="20" cy="20" r="${radius}" stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"></circle>
-  </svg><span class="sr-only">${escapeHtml(label)} ${score}</span>`;
+function radar(signals: SignalCard[]): string {
+  const measured = signals.filter((signal) => signal.score !== null);
+  const cx = 100;
+  const cy = 100;
+  const maxR = 62;
+  const labelR = 84;
+  const point = (index: number, total: number, radius: number): [number, number] => {
+    const angle = -Math.PI / 2 + (index * 2 * Math.PI) / total;
+    return [cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)];
+  };
+  const rings = [0.35, 0.68, 1].map((scale) => {
+    const pts = measured.map((_, index) => point(index, measured.length, maxR * scale).map((n) => n.toFixed(1)).join(","));
+    return `<polygon class="radar-ring" points="${pts.join(" ")}"></polygon>`;
+  });
+  const spokes = measured.map((_, index) => {
+    const [x, y] = point(index, measured.length, maxR);
+    return `<line class="radar-spoke" x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}"></line>`;
+  });
+  const area = measured
+    .map((signal, index) => point(index, measured.length, (maxR * (signal.score ?? 0)) / 100).map((n) => n.toFixed(1)).join(","))
+    .join(" ");
+  const dots = measured.map((signal, index) => {
+    const [x, y] = point(index, measured.length, (maxR * (signal.score ?? 0)) / 100);
+    return `<circle class="radar-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3"></circle>`;
+  });
+  const short: Record<string, string> = { udp: "UDP", timezone: "时区", fingerprint: "指纹", security: "安全" };
+  const labels = measured.map((signal, index) => {
+    const [x, y] = point(index, measured.length, labelR);
+    const text = `${short[signal.id] ?? signal.label} ${signal.score}`;
+    return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" dominant-baseline="middle">${escapeHtml(text)}</text>`;
+  });
+  const caption = measured.map((signal) => `${signal.label} ${signal.score}`).join("，");
+  return `<svg class="radar" viewBox="-24 -18 248 236" role="img" aria-label="已测信号：${escapeHtml(caption)}。DNS 不可得。">
+    ${rings.join("")}
+    ${spokes.join("")}
+    <polygon class="radar-area" points="${area}"></polygon>
+    ${dots.join("")}
+    ${labels.join("")}
+  </svg>`;
 }
 
-function statusGlyph(status: ServiceStatus): string {
-  if (status === "ok") {
-    return `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.2 6.4 11.2 12.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>`;
+function exitLine(exit: ScoreResult["exit"]): string {
+  if (!exit.ip && exit.countryLabel === "未知" && !exit.city && !exit.asOrganization && !exit.asn && !exit.colo) {
+    return "没有读到出口 IP";
   }
-  if (status === "uncertain") {
-    return `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>`;
-  }
-  return `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 4.2 11.8 11.8M11.8 4.2 4.2 11.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>`;
+  const org = [formatAsn(exit.asn), exit.asOrganization].filter(Boolean).join(" ");
+  const colo = exit.colo ? `边缘 ${exit.colo}` : "";
+  const rest = [exit.countryLabel, exit.city, org, colo].filter((item): item is string => Boolean(item));
+  const ip = exit.ip ? `<span class="exit-ip">${escapeHtml(exit.ip)}</span>` : "没有出口 IP";
+  return rest.length ? `${ip} · ${rest.map((item) => escapeHtml(item)).join(" · ")}` : ip;
+}
+
+function signalCards(signals: SignalCard[]): string {
+  return signals
+    .map((signal) => {
+      const value = signal.score === null ? "—" : String(signal.score);
+      const width = signal.score === null ? 0 : signal.score;
+      const empty = signal.score === null ? " is-empty" : "";
+      return `<article class="signal tone-${signal.tone}" data-signal="${signal.id}">
+        <h3>${escapeHtml(signal.label)}</h3>
+        <p class="signal-score">${value}</p>
+        <p class="badge tone-${signal.tone}">${escapeHtml(signal.badge)}</p>
+        <span class="meter${empty}"><span style="width:${width}%"></span></span>
+      </article>`;
+    })
+    .join("");
+}
+
+function sessionText(session: SessionMemo): string {
+  const base = `本次会话第 ${session.runs} 次测量，只留在这个标签页。`;
+  if (session.ipChanges > 0) return `${base}出口 IP 有变化。`;
+  if (session.runs > 1) return `${base}出口 IP 未变。`;
+  return base;
+}
+
+function historyTone(score: ScoreResult): string {
+  if (score.history.appears) return "bad";
+  if (score.history.label === "无公开记录") return "ok";
+  return "neutral";
 }
 
 function fieldsHtml(fields: Field[]): string {
@@ -87,58 +138,6 @@ function fieldsHtml(fields: Field[]): string {
     .join("");
 }
 
-function risksHtml(risks: RiskScore[]): string {
-  return risks
-    .map(
-      (risk) => `<article class="score-card tone-${risk.tone}" data-risk="${risk.id}">
-        <h2>${escapeHtml(risk.label)}</h2>
-        ${dial(risk.score, risk.tone, `${risk.label} ${risk.status}`)}
-        <p class="badge tone-${risk.tone}">${escapeHtml(risk.status)}</p>
-      </article>`,
-    )
-    .join("");
-}
-
-function axesHtml(axes: Axis[]): string {
-  return axes
-    .map((axis) => {
-      const score = goodness(axis);
-      const label = RING_LABEL[axis.id] ?? axis.label;
-      return `<article class="axis" title="${escapeHtml(axis.note)}">
-        ${miniDial(score, toneFor(score), label)}
-        <strong>${score}</strong>
-        <span>${escapeHtml(label)}</span>
-        <p class="sr-only">${escapeHtml(axis.note)}</p>
-      </article>`;
-    })
-    .join("");
-}
-
-function matrixHtml(score: ScoreResult): string {
-  return score.services
-    .map((group) => {
-      const chips = group.services
-        .map(
-          (service) => `<article class="chip status-${service.status}" data-service="${escapeHtml(service.id)}" data-status="${service.status}">
-            <span class="chip-mark" aria-hidden="true">${escapeHtml(service.mark)}</span>
-            <div class="chip-body">
-              <div class="chip-top">
-                <h3>${escapeHtml(service.name)}</h3>
-                <span class="badge status-${service.status}">${statusGlyph(service.status)}${STATUS_LABEL[service.status]}</span>
-              </div>
-              <p>${escapeHtml(service.reason)}</p>
-            </div>
-          </article>`,
-        )
-        .join("");
-      return `<section class="group" data-group="${group.id}">
-        <h2>${escapeHtml(group.label)}</h2>
-        <div class="chips">${chips}</div>
-      </section>`;
-    })
-    .join("");
-}
-
 function mismatchesHtml(score: ScoreResult): string {
   if (score.mismatches.length === 0) return `<p class="empty">这几组对照里没有明显矛盾。</p>`;
   return score.mismatches
@@ -153,8 +152,8 @@ function mismatchesHtml(score: ScoreResult): string {
 
 export function renderPage(input: {
   status: string;
-  edgeError: string | null;
   score: ScoreResult;
+  session: SessionMemo;
   observed: Field[];
   claimed: Field[];
   raw: unknown;
@@ -164,14 +163,68 @@ export function renderPage(input: {
 
   const verdict = document.querySelector("#verdict");
   if (verdict) {
-    verdict.innerHTML = `<div class="scoreboard">${risksHtml(input.score.risks)}</div>
-      <div class="axis-row">${axesHtml(input.score.axes)}</div>
-      <div class="matrix">${matrixHtml(input.score)}</div>`;
+    const { score } = input;
+    const riskValue = score.risk.score === null ? "—" : String(score.risk.score);
+    const pill = score.attribute.tag ?? score.attribute.label;
+    const pillClass = score.attribute.tag === "原生" ? "attr-native" : `attr-${score.attribute.kind}`;
+    const riskAttr = score.risk.score === null ? "" : String(score.risk.score);
+    verdict.innerHTML = `<section class="panel" data-trust="${score.trust.score}" data-purity="${score.purity.score}" data-risk="${riskAttr}" data-attribute="${score.attribute.kind}" data-native="${score.attribute.native ? "true" : "false"}" data-history="${escapeHtml(score.history.label)}">
+      <div class="hero">
+        <div class="trust tone-${score.trust.tone}">
+          <div class="trust-gauge" role="img" aria-label="Claude AI Trust Score ${score.trust.score}，${score.trust.band}">
+            ${dial(score.trust.score)}
+            <div class="trust-face">
+              <strong>${score.trust.score}</strong>
+              <span>${score.trust.band}</span>
+            </div>
+          </div>
+          <p class="trust-caption">Claude AI Trust Score</p>
+        </div>
+        <div class="hero-copy">
+          <p class="exit">${exitLine(score.exit)}</p>
+          <p class="summary">${escapeHtml(score.summary)}</p>
+          <p class="fine">启发式估计，与 Anthropic 无关。</p>
+          <div class="stats">
+            <article class="stat tone-${score.purity.tone}">
+              <h2>纯净度</h2>
+              <strong>${score.purity.score}</strong>
+              <p class="badge tone-${score.purity.tone}">${score.purity.band}</p>
+            </article>
+            <article class="stat tone-${score.risk.tone}">
+              <h2>风险</h2>
+              <strong>${riskValue}</strong>
+              <p class="badge tone-${score.risk.tone}">${score.risk.band}</p>
+            </article>
+            <article class="stat attr-${score.attribute.kind}">
+              <h2>属性</h2>
+              <strong>${escapeHtml(score.attribute.label)}</strong>
+              <p class="badge ${pillClass}">${escapeHtml(pill)}</p>
+            </article>
+          </div>
+        </div>
+      </div>
+      <div class="board">
+        <div class="radar-wrap">${radar(score.signals)}</div>
+        <div class="cards">${signalCards(score.signals)}</div>
+      </div>
+      <section class="history">
+        <h2>历史</h2>
+        <p class="badge tone-${historyTone(score)}">${escapeHtml(score.history.label)}</p>
+        <p>${escapeHtml(score.history.note)} ${escapeHtml(sessionText(input.session))}</p>
+      </section>
+    </section>`;
   }
 
   const details = document.querySelector("#details");
   if (details) {
+    const notes = input.score.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
     details.innerHTML = `<details class="fold">
+      <summary>评分依据</summary>
+      <ul class="notes">${notes}</ul>
+      <h3 class="section-label">差异</h3>
+      <div class="mismatch-list">${mismatchesHtml(input.score)}</div>
+    </details>
+    <details class="fold">
       <summary>信号明细</summary>
       <div class="split">
         <section>
@@ -183,8 +236,6 @@ export function renderPage(input: {
           ${fieldsHtml(input.claimed)}
         </section>
       </div>
-      <h2 class="fold-heading">差异</h2>
-      <div class="mismatch-list">${mismatchesHtml(input.score)}</div>
     </details>`;
   }
 

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { isReputationLookupIp, parseStopForumSpam, type AbuseRecord } from "../shared/history.ts";
 import { splitHeaders } from "../shared/redact.ts";
 
 const CF_KEYS = [
@@ -52,12 +53,36 @@ function pickCf(cf: CfRecord): CfRecord {
   return picked;
 }
 
+function historyRecord(attempted: boolean): AbuseRecord {
+  return { source: "none", appears: null, frequency: null, lastSeen: null, attempted };
+}
+
+async function lookupAbuse(ip: string | null): Promise<AbuseRecord> {
+  if (!ip || !isReputationLookupIp(ip)) return historyRecord(false);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1800);
+  try {
+    const response = await fetch(`https://api.stopforumspam.org/api?ip=${ip}&json`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) return historyRecord(true);
+    return parseStopForumSpam(await response.json()) ?? historyRecord(true);
+  } catch {
+    return historyRecord(true);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const app = new Hono();
 
-app.get("/api/edge", (c) => {
+app.get("/api/edge", async (c) => {
   const request = c.req.raw;
   const cf = pickCf((request as Request & { cf?: CfRecord }).cf ?? {});
   const { headers, omittedHeaders } = splitHeaders(request.headers);
+  const connectingIp = request.headers.get("CF-Connecting-IP");
+  const history = await lookupAbuse(connectingIp);
   c.header("Cache-Control", "no-store");
   c.header(
     "Accept-CH",
@@ -65,14 +90,15 @@ app.get("/api/edge", (c) => {
   );
   c.header("X-Content-Type-Options", "nosniff");
   return c.json({
-    connectingIp: request.headers.get("CF-Connecting-IP"),
+    connectingIp,
     ray: request.headers.get("CF-Ray"),
     ipCountry: request.headers.get("CF-IPCountry"),
     cf,
     headers,
     omittedHeaders,
+    history,
     collectedAt: new Date().toISOString(),
-    privacy: "Cookie、Authorization 和 Cloudflare Access JWT 不会返回。这个 Worker 不保存请求。",
+    privacy: "Cookie、Authorization 和 Cloudflare Access JWT 不会返回。Worker 不保存请求。公网出口 IP 会向 StopForumSpam 查询一次。",
   });
 });
 

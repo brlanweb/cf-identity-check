@@ -1,13 +1,22 @@
+/**
+ * Heuristic trust score for the exit IP a Claude-style service would see.
+ * Not an Anthropic product and not a connectivity test.
+ * DNS is left unscored when neither the browser nor the edge exposes a resolver.
+ * History never invents an abuse record.
+ */
+import { historyCopy, type AbuseRecord } from "./history.ts";
 import { headerValue, unquote } from "./redact.ts";
-import { evaluateServices, type ServiceGroup } from "./services.ts";
 
-export type Outlook = "higher" | "mixed" | "lower";
+export type Tone = "ok" | "warn" | "bad" | "neutral";
+
+export type AttributeKind = "residential" | "datacenter" | "native" | "unknown";
 
 export type EdgeSnapshot = {
   connectingIp: string | null;
   country: string | null;
   timezone: string | null;
   asOrganization: string | null;
+  asn: string | null;
   colo: string | null;
   city: string | null;
 };
@@ -26,17 +35,19 @@ export type ScoreInput = {
   observed: {
     webdriver: boolean;
     webglRenderer: string | null;
-    hardwareConcurrency: number | null;
-    maxTouchPoints: number;
     screenWidth: number;
     screenHeight: number;
     outerWidth: number;
     outerHeight: number;
     webrtcGlobalIps: string[];
+    webrtcCandidates: number;
+    webrtcError: string | null;
+    webrtcMdns: boolean;
+    canvasHash: string | null;
+    audioHash: string | null;
   };
+  abuse?: AbuseRecord | null;
 };
-
-export type Reason = { tone: "ok" | "warn" | "bad"; text: string };
 
 export type Mismatch = {
   label: string;
@@ -46,61 +57,71 @@ export type Mismatch = {
   severity: "info" | "warn" | "bad";
 };
 
-export type Axis = { id: string; label: string; score: number; note: string };
+export type SignalId = "dns" | "udp" | "timezone" | "fingerprint" | "security";
 
-export type Glance = {
-  id: "country" | "network" | "geo" | "client" | "automation";
+export type SignalCard = {
+  id: SignalId;
   label: string;
-  value: string;
+  score: number | null;
+  tone: Tone;
   badge: string;
-  tone: "ok" | "warn" | "bad" | "neutral";
-};
-
-export type RiskScore = {
-  id: "spoof" | "fraud";
-  label: "伪装度" | "欺诈分";
-  score: number;
-  tone: "ok" | "warn" | "bad";
-  status: "低" | "中" | "高";
+  note: string;
 };
 
 export type ScoreResult = {
-  outlook: Outlook;
-  headline: string;
+  trust: { score: number; tone: Tone; band: "较高" | "中等" | "偏低" | "较低" };
+  purity: { score: number; tone: Tone; band: "高" | "中" | "低" };
+  risk: { score: number | null; tone: Tone; band: "低" | "中" | "高" | "未知" };
+  attribute: {
+    kind: AttributeKind;
+    label: "住宅" | "机房" | "原生" | "未知";
+    /** Residential path that also looks native, or an unclassified non-datacenter ISP. */
+    native: boolean;
+    tag: "原生" | "VPN" | "Tor" | null;
+    tone: Tone;
+    note: string;
+  };
+  signals: SignalCard[];
+  history: {
+    label: string;
+    note: string;
+    source: AbuseRecord["source"];
+    appears: boolean | null;
+    frequency: number | null;
+    lastSeen: string | null;
+  };
+  exit: {
+    ip: string | null;
+    countryLabel: string;
+    city: string | null;
+    asOrganization: string | null;
+    asn: string | null;
+    colo: string | null;
+  };
   summary: string;
-  reasons: Reason[];
-  axes: Axis[];
+  notes: string[];
   mismatches: Mismatch[];
-  glances: Glance[];
-  risks: RiskScore[];
-  services: ServiceGroup[];
 };
 
-const RANK: Outlook[] = ["lower", "mixed", "higher"];
+const TRUST_WEIGHT = { purity: 0.3, udp: 0.16, timezone: 0.18, fingerprint: 0.14, security: 0.22 };
 
-const HEADLINE: Record<Outlook, string> = {
-  higher: "偏高",
-  mixed: "中等",
-  lower: "偏低",
-};
-
-const SUMMARY: Record<Outlook, string> = {
-  higher: "四项信号比较整齐，清单里多数 AI 和流媒体的直接打开阻力相对较小。",
-  mixed: "信号不完全同向。各项服务对地区和机房地址的态度不同，看下面的矩阵。",
-  lower: "按地区、网络类型或客户端异常，清单里不少服务处于较高阻力。",
-};
-
-/**
- * Places where a broad set of foreign consumer services is widely reported as
- * unreachable. Per-service nuance lives in services.ts. Static hint only.
- */
-const RESTRICTED: Record<string, string> = {
-  CN: "边缘 IP 落在中国大陆。公开资料里，YouTube、Netflix、Google 以及 Claude、ChatGPT 等多数境外服务在这里通常不能直接使用。",
-  IR: "边缘 IP 落在伊朗。YouTube 与多项 Google 服务经常无法直接访问，部分 AI 服务也不在开放地区。",
-  TM: "边缘 IP 落在土库曼斯坦。YouTube 等境外网站在这里经常无法直接访问。",
-  KP: "边缘 IP 落在朝鲜。对外网站访问通常受到严格限制。",
-  ER: "边缘 IP 落在厄立特里亚。YouTube 等境外网站在这里经常无法直接访问。",
-};
+const VPN_HINTS = [
+  "mullvad",
+  "nordvpn",
+  "nord vpn",
+  "expressvpn",
+  "express vpn",
+  "protonvpn",
+  "proton ag",
+  "surfshark",
+  "private internet",
+  "ipvanish",
+  "cyberghost",
+  "windscribe",
+  "hide.me",
+  "astrill",
+  "vpn",
+];
 
 const STRONG_HOSTING = [
   "amazon",
@@ -142,13 +163,6 @@ const STRONG_HOSTING = [
   "colo crossing",
   "packethub",
   "hostwinds",
-  "mullvad",
-  "nordvpn",
-  "expressvpn",
-  "protonvpn",
-  "proton ag",
-  "surfshark",
-  "private internet",
   "tzulo",
   "cogent",
   "hurricane electric",
@@ -158,7 +172,6 @@ const STRONG_HOSTING = [
   "hostroyale",
   "datacamp limited",
   "24shells",
-  "vpn",
 ];
 
 const WEAK_HOSTING = ["hosting", "datacenter", "data center", "colo", "cloud"];
@@ -298,7 +311,10 @@ const TZ_COUNTRY: Record<string, string> = {
   "Africa/Nairobi": "KE",
 };
 
-export const COUNTRY_ZH: Record<string, string> = {
+/** Countries often absent from Claude's published coverage. Informational only — not part of purity. */
+const REGION_NOTE = new Set(["CN", "RU", "BY", "IR", "KP", "SY", "CU"]);
+
+const COUNTRY_ZH: Record<string, string> = {
   CN: "中国",
   HK: "中国香港",
   MO: "中国澳门",
@@ -328,6 +344,21 @@ export const COUNTRY_ZH: Record<string, string> = {
   XX: "未知",
 };
 
+const ATTR_LABEL: Record<AttributeKind, ScoreResult["attribute"]["label"]> = {
+  residential: "住宅",
+  datacenter: "机房",
+  native: "原生",
+  unknown: "未知",
+};
+
+const EMPTY_ABUSE: AbuseRecord = {
+  source: "none",
+  appears: null,
+  frequency: null,
+  lastSeen: null,
+  attempted: false,
+};
+
 export function countryLabel(code: string | null): string {
   if (!code) return "未知";
   const upper = code.toUpperCase();
@@ -341,7 +372,7 @@ export function primaryLanguage(tag: string | null | undefined): string {
   return first.split("-")[0] ?? "";
 }
 
-export function normPlatform(value: string | null | undefined): string {
+function normPlatform(value: string | null | undefined): string {
   const text = (value ?? "").toLowerCase();
   if (!text) return "";
   if (text.includes("iphone") || text.includes("ipad") || text.includes("ios")) return "ios";
@@ -353,7 +384,7 @@ export function normPlatform(value: string | null | undefined): string {
   return text;
 }
 
-export function platformFromUserAgent(userAgent: string): string {
+function platformFromUserAgent(userAgent: string): string {
   const ua = userAgent.toLowerCase();
   if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ipod")) return "ios";
   if (ua.includes("android")) return "android";
@@ -379,19 +410,28 @@ function includesAny(haystack: string, needles: string[]): string | null {
   return null;
 }
 
-export function classifyOrganization(organization: string | null): {
+function classifyOrganization(organization: string | null): {
   kind: "residential" | "hosting" | "unknown";
+  vpn: boolean;
   hit: string | null;
 } {
   const text = (organization ?? "").toLowerCase();
-  if (!text.trim()) return { kind: "unknown", hit: null };
+  if (!text.trim()) return { kind: "unknown", vpn: false, hit: null };
+  const vpn = includesAny(text, VPN_HINTS);
+  if (vpn) return { kind: "hosting", vpn: true, hit: vpn };
   const strong = includesAny(text, STRONG_HOSTING);
+  if (strong) return { kind: "hosting", vpn: false, hit: strong };
   const residential = includesAny(text, RESIDENTIAL);
+  if (residential) return { kind: "residential", vpn: false, hit: residential };
   const weak = includesAny(text, WEAK_HOSTING);
-  if (strong) return { kind: "hosting", hit: strong };
-  if (residential) return { kind: "residential", hit: residential };
-  if (weak) return { kind: "hosting", hit: weak };
-  return { kind: "unknown", hit: null };
+  if (weak) return { kind: "hosting", vpn: false, hit: weak };
+  return { kind: "unknown", vpn: false, hit: null };
+}
+
+function isTor(country: string, organization: string | null): boolean {
+  if (country === "T1") return true;
+  const text = (organization ?? "").toLowerCase();
+  return /\btor\b/.test(text) || text.includes("tor exit") || text.includes("torservers");
 }
 
 function timezoneCountry(zone: string | null): string | null {
@@ -399,38 +439,42 @@ function timezoneCountry(zone: string | null): string | null {
   return TZ_COUNTRY[zone] ?? null;
 }
 
-function downgrade(level: Outlook): Outlook {
-  const index = RANK.indexOf(level);
-  return RANK[Math.max(0, index - 1)] ?? "lower";
-}
-
 type GeoResult = { score: number; note: string; conflict: boolean };
 
-function compareGeo(browserZone: string, edgeZone: string | null): GeoResult {
-  if (!edgeZone) {
-    return { score: 60, note: "边缘没有时区，跳过地理对照。", conflict: false };
-  }
-  if (browserZone === edgeZone) {
-    return { score: 94, note: "浏览器时区与边缘时区相同。", conflict: false };
-  }
+function compareGeo(browserZone: string, edgeZone: string | null, edgeCountry: string | null): GeoResult {
   const browserCountry = timezoneCountry(browserZone);
-  const edgeCountry = timezoneCountry(edgeZone);
-  if (browserCountry && edgeCountry && browserCountry === edgeCountry) {
-    return { score: 84, note: "时区名称不同，但都落在同一国家/地区。", conflict: false };
+  const normalizedEdge = edgeCountry?.toUpperCase() ?? "";
+  const edgeCountryKnown = Boolean(normalizedEdge && normalizedEdge !== "XX" && normalizedEdge !== "T1");
+
+  if (!edgeZone && !edgeCountryKnown) {
+    return { score: 60, note: "边缘没有时区或国家，跳过时区对照。", conflict: false };
   }
-  if (browserCountry && edgeCountry && browserCountry !== edgeCountry) {
+  if (browserCountry && edgeCountryKnown && browserCountry !== normalizedEdge) {
     return {
       score: 28,
-      note: `浏览器时区像 ${countryLabel(browserCountry)}，边缘时区像 ${countryLabel(edgeCountry)}。`,
+      note: `浏览器时区像 ${countryLabel(browserCountry)}，边缘国家是 ${countryLabel(normalizedEdge)}。`,
       conflict: true,
     };
   }
-  const browserRegion = browserZone.split("/")[0] ?? "";
-  const edgeRegion = edgeZone.split("/")[0] ?? "";
-  if (browserRegion && edgeRegion && browserRegion !== edgeRegion) {
-    return { score: 40, note: `浏览器时区 ${browserZone} 与边缘时区 ${edgeZone} 不在同一个大区。`, conflict: true };
+  if (edgeZone && browserZone === edgeZone) {
+    return { score: 94, note: "浏览器时区与边缘时区相同。", conflict: false };
   }
-  return { score: 68, note: `时区分别是 ${browserZone} 和 ${edgeZone}，没有足够资料判定是否跨国。`, conflict: false };
+  const edgeTzCountry = timezoneCountry(edgeZone);
+  if (browserCountry && edgeTzCountry && browserCountry === edgeTzCountry) {
+    return { score: 86, note: "时区名称不同，但都落在同一国家/地区。", conflict: false };
+  }
+  if (browserCountry && edgeCountryKnown && browserCountry === normalizedEdge) {
+    return { score: 88, note: "浏览器时区与边缘国家一致。", conflict: false };
+  }
+  if (edgeZone) {
+    const browserRegion = browserZone.split("/")[0] ?? "";
+    const edgeRegion = edgeZone.split("/")[0] ?? "";
+    if (browserRegion && edgeRegion && browserRegion !== edgeRegion) {
+      return { score: 36, note: `浏览器时区 ${browserZone} 与边缘时区 ${edgeZone} 不在同一个大区。`, conflict: true };
+    }
+    return { score: 68, note: `时区分别是 ${browserZone} 和 ${edgeZone}，没有足够资料判定是否跨国。`, conflict: false };
+  }
+  return { score: 70, note: "边缘没有时区字段，国家也不足以和浏览器时区对照。", conflict: false };
 }
 
 function uniquePlatforms(values: string[]): string[] {
@@ -508,287 +552,394 @@ function compareClient(input: ScoreInput): ClientResult {
   }
 
   score = Math.max(0, score);
-  const note = mismatches.length === 0 ? "UA、Client Hints、语言和屏幕没有明显互相矛盾。" : mismatches.map((item) => item.detail).join("");
+  const note = mismatches.length === 0 ? "UA、Client Hints 和语言没有明显矛盾。" : mismatches.map((item) => item.detail).join("");
   return { score, mismatches, note };
 }
 
-type AutomationResult = { score: number; hits: string[] };
+type UdpResult = { score: number; note: string; leak: boolean; partial: boolean };
 
-function automationRisk(input: ScoreInput): AutomationResult {
-  let score = 0;
+function compareUdp(ip: string | null, input: ScoreInput["observed"]): UdpResult {
+  const globals = input.webrtcGlobalIps;
+  if (input.webrtcError) return { score: 46, note: input.webrtcError, leak: false, partial: false };
+  if (!ip) {
+    if (globals.length > 0) {
+      return { score: 52, note: `看到 UDP 公网 ${globals.join(", ")}，但没有边缘 IP 可对照。`, leak: false, partial: false };
+    }
+    return { score: 50, note: "没有边缘 IP，无法判断 UDP 是否泄漏。", leak: false, partial: false };
+  }
+  if (globals.length === 0) {
+    if (input.webrtcCandidates > 0) {
+      const mdns = input.webrtcMdns ? " 候选里有 mDNS。" : "";
+      return { score: 76, note: `有 STUN 候选，但没有解析出公网 IP。未见公网泄漏。${mdns}`, leak: false, partial: false };
+    }
+    return { score: 50, note: "没有收到 WebRTC 候选，无法确认 UDP 出口。", leak: false, partial: false };
+  }
+  const extras = globals.filter((item) => item !== ip);
+  if (globals.includes(ip) && extras.length === 0) {
+    return { score: 96, note: "WebRTC 公网地址与 CF-Connecting-IP 相同。", leak: false, partial: false };
+  }
+  if (globals.includes(ip)) {
+    return {
+      score: 62,
+      note: `出口 IP 在 WebRTC 候选里，同时还有其它公网地址 ${extras.join(", ")}。`,
+      leak: false,
+      partial: true,
+    };
+  }
+  return { score: 26, note: `WebRTC 看到 ${globals.join(", ")}，边缘是 ${ip}。`, leak: true, partial: false };
+}
+
+function securityScore(input: ScoreInput, client: ClientResult, leak: boolean, geoConflict: boolean): { score: number; hits: string[] } {
+  let score = 100;
   const hits: string[] = [];
   const ua = input.claimed.userAgent.toLowerCase();
   if (input.observed.webdriver) {
-    score += 70;
+    score -= 70;
     hits.push("navigator.webdriver 为 true");
   }
   if (/headless|phantomjs|selenium|puppeteer|playwright/.test(ua)) {
-    score += 70;
-    hits.push("User-Agent 含有自动化或无头浏览器字样");
+    score -= 70;
+    hits.push("User-Agent 含有无头或自动化字样");
   }
   const renderer = (input.observed.webglRenderer ?? "").toLowerCase();
   if (renderer.includes("swiftshader") || renderer.includes("llvmpipe")) {
-    score += 30;
-    hits.push("WebGL 渲染器像软件模拟（SwiftShader / llvmpipe）");
+    score -= 24;
+    hits.push("WebGL 像软件渲染");
   }
   if (input.observed.outerWidth === 0 && input.observed.outerHeight === 0) {
-    score += 20;
+    score -= 16;
     hits.push("窗口外部尺寸为 0");
   }
   if (input.claimed.languages.length === 0) {
-    score += 15;
+    score -= 10;
     hits.push("navigator.languages 为空");
   }
-  return { score: Math.min(100, score), hits };
+  for (const mismatch of client.mismatches) {
+    if (mismatch.label === "系统平台") {
+      score -= 22;
+      hits.push("UA 与 Client Hints 或平台不一致");
+    } else if (mismatch.label === "语言") {
+      score -= 8;
+      hits.push("语言声称互相矛盾");
+    } else if (mismatch.label === "移动端标记") {
+      score -= 14;
+      hits.push("移动端标记和 UA 矛盾");
+    } else if (mismatch.label === "显卡与系统") {
+      score -= 14;
+      hits.push("显卡和声称的系统不一致");
+    } else if (mismatch.label === "屏幕") {
+      score -= 20;
+      hits.push("屏幕尺寸异常");
+    }
+  }
+  if (leak) {
+    score -= 28;
+    hits.push("WebRTC 公网地址和出口 IP 不一致");
+  }
+  if (geoConflict) {
+    score -= 20;
+    hits.push("时区与边缘位置不一致");
+  }
+  return { score: clamp(score), hits };
 }
 
-function networkAxis(kind: "residential" | "hosting" | "unknown", organization: string | null): Axis {
-  if (kind === "residential") {
-    return { id: "network", label: "住宅网络倾向", score: 86, note: `组织名更像住宅宽带（${organization || "未提供"}）。` };
+function clamp(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function goodBand(score: number, highAt: number, midAt: number, high: string, mid: string, low: string): { tone: Tone; badge: string } {
+  if (score >= highAt) return { tone: "ok", badge: high };
+  if (score >= midAt) return { tone: "warn", badge: mid };
+  return { tone: "bad", badge: low };
+}
+
+function udpBadge(score: number): { tone: Tone; badge: string } {
+  if (score >= 80) return { tone: "ok", badge: "一致" };
+  if (score >= 70) return { tone: "ok", badge: "未泄漏" };
+  if (score >= 60) return { tone: "warn", badge: "部分" };
+  if (score >= 45) return { tone: "warn", badge: "不足" };
+  return { tone: "bad", badge: "不一致" };
+}
+
+function trustBand(score: number): ScoreResult["trust"] {
+  if (score >= 80) return { score, tone: "ok", band: "较高" };
+  if (score >= 60) return { score, tone: "warn", band: "中等" };
+  if (score >= 40) return { score, tone: "bad", band: "偏低" };
+  return { score, tone: "bad", band: "较低" };
+}
+
+function purityBand(score: number): ScoreResult["purity"] {
+  if (score >= 80) return { score, tone: "ok", band: "高" };
+  if (score >= 45) return { score, tone: "warn", band: "中" };
+  return { score, tone: "bad", band: "低" };
+}
+
+function riskBand(score: number): { tone: Tone; band: "低" | "中" | "高" } {
+  if (score >= 60) return { tone: "bad", band: "高" };
+  if (score >= 30) return { tone: "warn", band: "中" };
+  return { tone: "ok", band: "低" };
+}
+
+function spamAdjust(abuse: AbuseRecord): { trust: number; risk: number } {
+  if (abuse.source !== "stopforumspam" || abuse.appears !== true) return { trust: 0, risk: 0 };
+  if ((abuse.frequency ?? 0) >= 3) return { trust: 12, risk: 32 };
+  return { trust: 6, risk: 16 };
+}
+
+function attributeNote(input: {
+  kind: AttributeKind;
+  organization: string | null;
+  tor: boolean;
+  vpn: boolean;
+  nativePath: boolean;
+  leak: boolean;
+  partial: boolean;
+  geoConflict: boolean;
+}): string {
+  const org = input.organization?.trim() || "未提供";
+  if (input.tor) return "边缘把这个出口标成 Tor，按匿名出口而不是住宅宽带计。";
+  if (input.vpn) return `组织名像 VPN（${org}）。`;
+  if (input.kind === "datacenter") return `组织名更像云厂商或机房（${org}）。`;
+  if (input.kind === "residential" && input.nativePath) {
+    return `组织名更像住宅宽带（${org}），时区和 UDP 与出口一致，所以同时标成原生。`;
   }
-  if (kind === "hosting") {
-    return { id: "network", label: "住宅网络倾向", score: 24, note: `组织名更像云厂商、托管或 VPN 出口（${organization || "未提供"}）。` };
+  if (input.kind === "residential") {
+    const why = [
+      input.leak ? "UDP 与出口不一致" : "",
+      input.partial ? "UDP 还有其它公网地址" : "",
+      input.geoConflict ? "时区与边缘不一致" : "",
+    ].filter(Boolean).join("，");
+    return `组织名更像住宅宽带（${org}）。${why}，所以不标原生。`;
   }
-  return { id: "network", label: "住宅网络倾向", score: 52, note: organization ? `组织名「${organization}」不在内置的住宅/机房词表里。` : "没有 ASN 组织名。" };
+  if (input.kind === "native") {
+    return `组织名「${org}」不在机房词表里，暂记为原生 ISP。没有 RIR 归属库，不能确认是不是广播地址。`;
+  }
+  return "没有 ASN 组织名，分不出住宅、机房或原生。";
+}
+
+function summarize(input: {
+  hasEdge: boolean;
+  tor: boolean;
+  vpn: boolean;
+  kind: AttributeKind;
+  nativePath: boolean;
+  leak: boolean;
+  geoConflict: boolean;
+  automated: boolean;
+  fingerprint: number;
+  security: number;
+}): string {
+  if (!input.hasEdge) return "没有边缘出口数据，信任分已压低。";
+  if (input.tor) return "Tor 出口，纯净度和信任分很低。";
+  if (input.automated) return "有自动化迹象，安全性把信任分压低。";
+  if (input.vpn) return "组织名像 VPN，纯净度和信任分下降。";
+  if (input.kind === "datacenter") return "组织名像机房或云厂商，纯净度偏低。";
+  if (input.leak) return "UDP/WebRTC 公网地址和出口 IP 不一致。";
+  if (input.geoConflict) return "浏览器时区和边缘位置不一致。";
+  if (input.kind === "residential" && input.nativePath && input.fingerprint >= 85 && input.security >= 85) {
+    return "像住宅原生出口，主要信号对齐。";
+  }
+  if (input.kind === "residential") return "像住宅宽带，但有信号没有完全对齐。";
+  if (input.kind === "native") return "不像机房，暂记为原生 ISP。";
+  return "没有 ASN 组织名，纯净度保守估计。";
 }
 
 export function scoreVisit(input: ScoreInput): ScoreResult {
-  const reasons: Reason[] = [];
-  const network = classifyOrganization(input.edge?.asOrganization ?? null);
-  const geo = compareGeo(input.claimed.timezone, input.edge?.timezone ?? null);
-  const client = compareClient(input);
-  const automation = automationRisk(input);
+  const organization = input.edge?.asOrganization ?? null;
   const country = input.edge?.country?.toUpperCase() ?? "";
+  const orgClass = classifyOrganization(organization);
+  const tor = isTor(country, organization);
+  const vpn = orgClass.vpn;
   const hasEdge = Boolean(input.edge && (input.edge.connectingIp || input.edge.country || input.edge.asOrganization));
+  const hasOrgName = Boolean(organization?.trim());
 
-  let outlook: Outlook = "mixed";
-  if (!hasEdge) {
-    outlook = "mixed";
-    reasons.push({ tone: "warn", text: "没有读到 Cloudflare 边缘地理信息。本地开发时 request.cf 经常是空的，部署到 Workers 后才会填上。" });
-  } else if (country === "T1") {
-    outlook = "lower";
-    reasons.push({ tone: "bad", text: "Cloudflare 把这个地址标成 Tor（T1）。这类出口经常被平台直接拒绝。" });
-  } else if (RESTRICTED[country]) {
-    outlook = "lower";
-    reasons.push({ tone: "bad", text: RESTRICTED[country] });
-  } else if (network.kind === "hosting") {
-    outlook = "mixed";
-    reasons.push({
-      tone: "warn",
-      text: `ASN 组织名更像云厂商、托管或 VPN（${input.edge?.asOrganization}）。数据中心地址上，Netflix、Disney+、Claude、ChatGPT 经常拒绝，YouTube 一类则宽松一些。`,
-    });
-  } else if (network.kind === "residential") {
-    outlook = "higher";
-    reasons.push({
-      tone: "ok",
-      text: `ASN 组织名更像住宅宽带（${input.edge?.asOrganization}），边缘国家/地区是 ${countryLabel(country)}。`,
-    });
-  } else if (!country || country === "XX") {
-    outlook = "mixed";
-    reasons.push({ tone: "warn", text: "有连接地址，但没有可靠的国家/地区代码。" });
-  } else {
-    outlook = "higher";
-    reasons.push({
-      tone: "ok",
-      text: `边缘国家/地区是 ${countryLabel(country)}，不在这份常见限制清单里，组织名也看不出机房或 VPN。`,
+  let kind: AttributeKind = "unknown";
+  if (tor || vpn || orgClass.kind === "hosting") kind = "datacenter";
+  else if (orgClass.kind === "residential") kind = "residential";
+  else if (hasOrgName) kind = "native";
+
+  const geo = compareGeo(input.claimed.timezone, input.edge?.timezone ?? null, input.edge?.country ?? null);
+  const client = compareClient(input);
+  const udp = compareUdp(input.edge?.connectingIp ?? null, input.observed);
+  const security = securityScore(input, client, udp.leak, geo.conflict);
+
+  let fingerprint = client.score;
+  if (!input.observed.canvasHash) fingerprint -= 6;
+  if (!input.observed.webglRenderer) fingerprint -= 6;
+  if (!input.observed.audioHash) fingerprint -= 4;
+  fingerprint = clamp(fingerprint);
+
+  let purity = kind === "residential" ? 92 : kind === "native" ? 74 : kind === "datacenter" ? 24 : 48;
+  if (vpn) purity = 12;
+  if (tor) purity = 8;
+  if (udp.leak) purity -= 14;
+  if (geo.conflict) purity -= 10;
+  purity = clamp(purity);
+
+  const nativePath = kind === "residential" && hasEdge && !udp.leak && !udp.partial && !geo.conflict && !tor && !vpn;
+  const abuse = input.abuse ?? EMPTY_ABUSE;
+  const spam = spamAdjust(abuse);
+  const automated = security.hits.some((hit) => hit.includes("webdriver") || hit.includes("无头") || hit.includes("自动化字样"));
+
+  const weighted =
+    purity * TRUST_WEIGHT.purity +
+    udp.score * TRUST_WEIGHT.udp +
+    geo.score * TRUST_WEIGHT.timezone +
+    fingerprint * TRUST_WEIGHT.fingerprint +
+    security.score * TRUST_WEIGHT.security;
+
+  let penalty = spam.trust;
+  if (tor) penalty += 34;
+  else if (vpn) penalty += 18;
+  else if (kind === "datacenter") penalty += 8;
+  if (kind === "unknown") penalty += 10;
+  if (udp.leak) penalty += 10;
+  if (geo.conflict) penalty += 8;
+  if (client.mismatches.some((item) => item.label === "系统平台")) penalty += 12;
+
+  let trust = weighted - penalty;
+  if (security.score < 55) trust = Math.min(trust, security.score);
+  if (!hasEdge) trust = Math.min(trust, 59);
+  const trustScore = clamp(trust);
+
+  let riskScore = 0;
+  if (tor) riskScore += 62;
+  else if (vpn) riskScore += 44;
+  else if (kind === "datacenter") riskScore += 32;
+  riskScore += 100 - security.score;
+  if (udp.leak) riskScore += 8;
+  if (geo.conflict) riskScore += 12;
+  riskScore += spam.risk;
+  riskScore = clamp(riskScore);
+
+  const udpTone = udpBadge(udp.score);
+  const tzTone = goodBand(geo.score, 80, 55, "一致", "大致", "偏差");
+  const fpTone = goodBand(fingerprint, 85, 55, "整齐", "有差异", "异常");
+  const secTone = goodBand(security.score, 80, 55, "干净", "留意", "风险");
+  const hashNote = [
+    input.observed.canvasHash ? "有 canvas" : "无 canvas",
+    input.observed.webglRenderer ? "有 WebGL" : "无 WebGL",
+    input.observed.audioHash ? "有 audio" : "无 audio",
+  ].join("，");
+  const securityNote = security.hits.length ? `${security.hits.join("；")}。` : "没有 webdriver、无头浏览器或明显伪装矛盾。";
+
+  const signals: SignalCard[] = [
+    {
+      id: "dns",
+      label: "DNS",
+      score: null,
+      tone: "neutral",
+      badge: "不可得",
+      note: "浏览器不暴露系统解析器或 DoH，边缘 request.cf 也没有解析器字段。不计入信任分。",
+    },
+    { id: "udp", label: "UDP", score: clamp(udp.score), ...udpTone, note: udp.note },
+    { id: "timezone", label: "时区", score: clamp(geo.score), ...tzTone, note: geo.note },
+    {
+      id: "fingerprint",
+      label: "指纹",
+      score: fingerprint,
+      ...fpTone,
+      note: `${client.note}${hashNote}。`,
+    },
+    { id: "security", label: "安全性", score: security.score, ...secTone, note: securityNote },
+  ];
+
+  const mismatches = [...client.mismatches];
+  if (geo.conflict) {
+    mismatches.unshift({
+      label: "时区",
+      claimed: input.claimed.timezone || "—",
+      observed: input.edge?.timezone || input.edge?.country || "—",
+      detail: geo.note,
+      severity: "warn",
     });
   }
-
-  if (hasEdge && network.kind === "hosting" && RESTRICTED[country]) {
-    reasons.push({ tone: "warn", text: "这个地址同时落在常见限制地区，组织名也像机房或 VPN。" });
-  }
-
-  reasons.push({ tone: geo.conflict ? "warn" : "ok", text: geo.note });
-  if (geo.conflict) outlook = downgrade(outlook);
-
-  if (client.mismatches.length === 0) {
-    reasons.push({ tone: "ok", text: client.note });
-  } else {
-    for (const mismatch of client.mismatches) {
-      reasons.push({ tone: mismatch.severity === "bad" ? "bad" : "warn", text: mismatch.detail });
-    }
-    if (client.score < 55) outlook = downgrade(outlook);
-  }
-
-  if (automation.hits.length === 0) {
-    reasons.push({ tone: "ok", text: "没有看到 webdriver、无头浏览器字样或软件渲染器。" });
-  } else {
-    reasons.push({ tone: "bad", text: `自动化迹象：${automation.hits.join("；")}。` });
-    if (automation.score >= 45) outlook = downgrade(outlook);
-  }
-
-  const connectingIp = input.edge?.connectingIp ?? null;
-  const webrtcIps = input.observed.webrtcGlobalIps;
-  if (connectingIp && webrtcIps.length > 0 && !webrtcIps.includes(connectingIp)) {
-    reasons.push({
-      tone: "warn",
-      text: "WebRTC 候选里的公网地址和 CF-Connecting-IP 不同。多宿主或代理时会出现这种情况。",
-    });
-    client.mismatches.push({
+  if (udp.leak && input.edge?.connectingIp) {
+    mismatches.push({
       label: "公网地址",
       claimed: "WebRTC 候选",
-      observed: `边缘 ${connectingIp}`,
-      detail: `WebRTC 看到 ${webrtcIps.join(", ")}，边缘看到 ${connectingIp}。`,
+      observed: `边缘 ${input.edge.connectingIp}`,
+      detail: udp.note,
       severity: "warn",
     });
   }
 
-  const axes: Axis[] = [
-    networkAxis(network.kind, input.edge?.asOrganization ?? null),
-    { id: "geo", label: "地理一致", score: geo.score, note: geo.note },
-    { id: "client", label: "客户端一致", score: client.score, note: client.note },
-    {
-      id: "automation",
-      label: "自动化风险",
-      score: automation.score,
-      note: automation.hits.length ? automation.hits.join("；") : "没有明显的自动化标记。",
-    },
+  const historyText = historyCopy(abuse);
+  const region = REGION_NOTE.has(country)
+    ? `公开资料里，${countryLabel(country)}经常不在 Claude 的服务范围。这不计入纯净度或信任分。`
+    : null;
+  const note = attributeNote({
+    kind,
+    organization,
+    tor,
+    vpn,
+    nativePath,
+    leak: udp.leak,
+    partial: udp.partial,
+    geoConflict: geo.conflict,
+  });
+  const notes = [
+    "信任分按纯净度 30%、UDP 16%、时区 18%、指纹 14%、安全性 22% 加权。DNS 缺测不计入。机房、VPN、泄漏和自动化会再扣分。",
+    note,
+    ...signals.map((item) => `${item.label}：${item.note}`),
+    "colo 是 Cloudflare 接入机房，不代表用户在机房网络。",
   ];
+  if (region) notes.push(region);
 
-  const glances = buildGlances({
-    hasEdge,
-    country,
-    network: network.kind,
-    geoConflict: geo.conflict,
-    edgeTimezone: input.edge?.timezone ?? null,
-    clientScore: client.score,
-    clientMismatchCount: client.mismatches.length,
-    automationScore: automation.score,
-  });
-
-  const services = evaluateServices({
-    hasEdge,
-    country,
-    countryName: countryLabel(country || null),
-    network: network.kind,
-    tor: country === "T1",
-    geoConflict: geo.conflict,
-    clientScore: client.score,
-    automationScore: automation.score,
-  });
-
-  const risks = buildRisks({
-    country,
-    network: network.kind,
-    geoConflict: geo.conflict,
-    automationScore: automation.score,
-    mismatches: client.mismatches,
-  });
+  const risk = hasEdge
+    ? { score: riskScore, ...riskBand(riskScore) }
+    : { score: null, tone: "neutral" as const, band: "未知" as const };
 
   return {
-    outlook,
-    headline: HEADLINE[outlook],
-    summary: SUMMARY[outlook],
-    reasons,
-    axes,
-    mismatches: client.mismatches,
-    glances,
-    risks,
-    services,
+    trust: trustBand(trustScore),
+    purity: purityBand(purity),
+    risk,
+    attribute: {
+      kind,
+      label: ATTR_LABEL[kind],
+      native: kind === "native" || nativePath,
+      tag: tor ? "Tor" : vpn ? "VPN" : nativePath ? "原生" : null,
+      tone: kind === "residential" ? "ok" : kind === "datacenter" ? "bad" : "neutral",
+      note,
+    },
+    signals,
+    history: {
+      label: historyText.label,
+      note: historyText.note,
+      source: abuse.source,
+      appears: abuse.appears,
+      frequency: abuse.frequency,
+      lastSeen: abuse.lastSeen,
+    },
+    exit: {
+      ip: input.edge?.connectingIp ?? null,
+      countryLabel: countryLabel(input.edge?.country ?? null),
+      city: input.edge?.city ?? null,
+      asOrganization: organization,
+      asn: input.edge?.asn ?? null,
+      colo: input.edge?.colo ?? null,
+    },
+    summary: summarize({
+      hasEdge,
+      tor,
+      vpn,
+      kind,
+      nativePath,
+      leak: udp.leak,
+      geoConflict: geo.conflict,
+      automated,
+      fingerprint,
+      security: security.score,
+    }),
+    notes,
+    mismatches,
   };
 }
 
-function riskBand(score: number): Pick<RiskScore, "tone" | "status"> {
-  if (score >= 60) return { tone: "bad", status: "高" };
-  if (score >= 30) return { tone: "warn", status: "中" };
-  return { tone: "ok", status: "低" };
-}
-
-function buildRisks(input: {
-  country: string;
-  network: "residential" | "hosting" | "unknown";
-  geoConflict: boolean;
-  automationScore: number;
-  mismatches: Mismatch[];
-}): RiskScore[] {
-  const labels = new Set(input.mismatches.map((item) => item.label));
-  const hosting = input.network === "hosting";
-  const tor = input.country === "T1";
-  let spoof = 0;
-  if (input.geoConflict) spoof += 36;
-  if (labels.has("系统平台")) spoof += 24;
-  if (labels.has("语言")) spoof += 14;
-  if (labels.has("移动端标记")) spoof += 12;
-  if (labels.has("显卡与系统")) spoof += 12;
-  if (labels.has("屏幕")) spoof += 10;
-  if (labels.has("公网地址")) spoof += 20;
-  if (hosting) spoof += 34;
-  if (tor) spoof += 46;
-  if (input.automationScore >= 45) spoof += 16;
-  else if (input.automationScore > 0) spoof += 8;
-
-  let fraud = 0;
-  if (tor) fraud += 64;
-  if (input.automationScore >= 70) fraud += 62;
-  else if (input.automationScore >= 30) fraud += 34;
-  else if (input.automationScore > 0) fraud += 16;
-  if (hosting) fraud += 18;
-  if (input.geoConflict) fraud += 14;
-  let client = 0;
-  if (labels.has("系统平台")) client += 16;
-  if (labels.has("语言")) client += 8;
-  if (labels.has("移动端标记")) client += 8;
-  if (labels.has("显卡与系统")) client += 8;
-  if (labels.has("屏幕")) client += 12;
-  fraud += Math.min(30, client);
-  if (labels.has("公网地址")) fraud += 10;
-
-  const spoofScore = Math.max(0, Math.min(100, spoof));
-  const fraudScore = Math.max(0, Math.min(100, fraud));
-  return [
-    { id: "spoof", label: "伪装度", score: spoofScore, ...riskBand(spoofScore) },
-    { id: "fraud", label: "欺诈分", score: fraudScore, ...riskBand(fraudScore) },
-  ];
-}
-
-function buildGlances(input: {
-  hasEdge: boolean;
-  country: string;
-  network: "residential" | "hosting" | "unknown";
-  geoConflict: boolean;
-  edgeTimezone: string | null;
-  clientScore: number;
-  clientMismatchCount: number;
-  automationScore: number;
-}): Glance[] {
-  const countryGlance: Glance = !input.hasEdge
-    ? { id: "country", label: "边缘地区", value: "未知", badge: "无边缘", tone: "neutral" }
-    : input.country === "T1"
-      ? { id: "country", label: "边缘地区", value: "Tor", badge: "高风险", tone: "bad" }
-      : RESTRICTED[input.country]
-        ? { id: "country", label: "边缘地区", value: countryLabel(input.country), badge: "受限", tone: "bad" }
-        : !input.country || input.country === "XX"
-          ? { id: "country", label: "边缘地区", value: "未知", badge: "无代码", tone: "neutral" }
-          : { id: "country", label: "边缘地区", value: countryLabel(input.country), badge: "可见", tone: "ok" };
-
-  const networkGlance: Glance =
-    input.network === "residential"
-      ? { id: "network", label: "网络类型", value: "住宅宽带", badge: "住宅", tone: "ok" }
-      : input.network === "hosting"
-        ? { id: "network", label: "网络类型", value: "机房或 VPN", badge: "机房", tone: "warn" }
-        : { id: "network", label: "网络类型", value: "未能归类", badge: "未知", tone: "neutral" };
-
-  const geoGlance: Glance = !input.edgeTimezone
-    ? { id: "geo", label: "时区对照", value: "缺少边缘时区", badge: "跳过", tone: "neutral" }
-    : input.geoConflict
-      ? { id: "geo", label: "时区对照", value: "不一致", badge: "偏差", tone: "warn" }
-      : { id: "geo", label: "时区对照", value: "一致", badge: "对齐", tone: "ok" };
-
-  const clientGlance: Glance =
-    input.clientMismatchCount === 0
-      ? { id: "client", label: "客户端", value: "未见矛盾", badge: "整齐", tone: "ok" }
-      : input.clientScore < 55
-        ? { id: "client", label: "客户端", value: "多处矛盾", badge: "异常", tone: "bad" }
-        : { id: "client", label: "客户端", value: "有差异", badge: "留意", tone: "warn" };
-
-  const automationGlance: Glance =
-    input.automationScore >= 45
-      ? { id: "automation", label: "自动化", value: "有迹象", badge: "风险", tone: "bad" }
-      : input.automationScore > 0
-        ? { id: "automation", label: "自动化", value: "弱迹象", badge: "留意", tone: "warn" }
-        : { id: "automation", label: "自动化", value: "未见迹象", badge: "干净", tone: "ok" };
-
-  return [countryGlance, networkGlance, geoGlance, clientGlance, automationGlance];
+function asText(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return null;
 }
 
 export function edgeSnapshotFromApi(payload: {
@@ -799,15 +950,15 @@ export function edgeSnapshotFromApi(payload: {
 } | null): EdgeSnapshot | null {
   if (!payload) return null;
   const cf = payload.cf ?? {};
-  const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value : null);
-  const country = text(cf.country) ?? text(payload.ipCountry);
+  const country = asText(cf.country) ?? asText(payload.ipCountry);
   return {
-    connectingIp: payload.connectingIp ?? headerValue(payload.headers ?? {}, "cf-connecting-ip"),
+    connectingIp: asText(payload.connectingIp) ?? headerValue(payload.headers ?? {}, "cf-connecting-ip"),
     country,
-    timezone: text(cf.timezone),
-    asOrganization: text(cf.asOrganization),
-    colo: text(cf.colo),
-    city: text(cf.city),
+    timezone: asText(cf.timezone),
+    asOrganization: asText(cf.asOrganization),
+    asn: asText(cf.asn),
+    colo: asText(cf.colo),
+    city: asText(cf.city),
   };
 }
 
