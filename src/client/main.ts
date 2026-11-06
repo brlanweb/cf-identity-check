@@ -1,0 +1,161 @@
+import "./styles.css";
+import { collectBrowser, type BrowserReport } from "./collect.ts";
+import { shortHash } from "./hash.ts";
+import { renderPage, type Field } from "./render.ts";
+import { headerValue } from "../shared/redact.ts";
+import {
+  claimedFromSignals,
+  countryLabel,
+  display,
+  edgeSnapshotFromApi,
+  scoreVisit,
+} from "../shared/score.ts";
+
+type EdgePayload = {
+  connectingIp: string | null;
+  ray: string | null;
+  ipCountry: string | null;
+  cf: Record<string, unknown>;
+  headers: Record<string, string>;
+  omittedHeaders: string[];
+  collectedAt: string;
+  privacy: string;
+};
+
+type EdgeResult = { payload: EdgePayload | null; error: string | null };
+
+function text(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+async function loadEdge(): Promise<EdgeResult> {
+  try {
+    const response = await fetch("/api/edge", { cache: "no-store" });
+    if (!response.ok) {
+      return { payload: null, error: `边缘接口返回 ${response.status}。` };
+    }
+    const payload = (await response.json()) as EdgePayload;
+    return { payload, error: null };
+  } catch {
+    return { payload: null, error: "没有连上 /api/edge。" };
+  }
+}
+
+function observedFields(edge: EdgePayload | null, browser: BrowserReport): Field[] {
+  const cf = edge?.cf ?? {};
+  const connection = browser.connection
+    ? [`${browser.connection.effectiveType ?? "—"}`, browser.connection.downlink !== null ? `${browser.connection.downlink} Mb/s` : null, browser.connection.rtt !== null ? `rtt ${browser.connection.rtt} ms` : null, browser.connection.saveData ? "saveData" : null]
+        .filter(Boolean)
+        .join(" · ")
+    : "浏览器没有提供 Network Information";
+  const permissionText = Object.entries(browser.permissions)
+    .map(([name, state]) => `${name}: ${state}`)
+    .join(" · ");
+  const storageText = Object.entries(browser.storage)
+    .map(([name, ok]) => `${name}: ${ok ? "可用" : "不可用"}`)
+    .join(" · ");
+  const webrtc = browser.webrtc.error
+    ? browser.webrtc.error
+    : browser.webrtc.globalIps.length
+      ? `公网 ${browser.webrtc.globalIps.join(", ")}`
+      : browser.webrtc.ips.length
+        ? `仅本地/保留地址 ${browser.webrtc.ips.join(", ")}`
+        : browser.webrtc.candidates.length
+          ? `${browser.webrtc.candidates.length} 条候选，没有可解析的 IP（常见于 mDNS）`
+          : "没有收到候选";
+
+  return [
+    { section: "边缘", label: "连接 IP", value: display(edge?.connectingIp), source: "CF-Connecting-IP" },
+    { section: "边缘", label: "国家/地区", value: countryLabel(text(cf.country) === "—" ? edge?.ipCountry ?? null : text(cf.country)), source: "request.cf.country" },
+    { section: "边缘", label: "城市 / 地区", value: [text(cf.city), text(cf.region)].filter((item) => item !== "—").join(" · ") || "—", source: "request.cf" },
+    { section: "边缘", label: "数据中心", value: text(cf.colo), source: "request.cf.colo" },
+    { section: "边缘", label: "ASN", value: cf.asn === undefined ? "—" : `${text(cf.asn)} · ${text(cf.asOrganization)}`, source: "request.cf.asn / asOrganization" },
+    { section: "边缘", label: "时区", value: text(cf.timezone), source: "由 IP 地理推断" },
+    { section: "边缘", label: "协议 / TLS", value: [text(cf.httpProtocol), text(cf.tlsVersion), text(cf.tlsCipher)].join(" · "), source: "request.cf" },
+    { section: "边缘", label: "往返时间", value: cf.clientTcpRtt !== undefined ? `${text(cf.clientTcpRtt)} ms TCP` : cf.clientQuicRtt !== undefined ? `${text(cf.clientQuicRtt)} ms QUIC` : "—", source: "clientTcpRtt / clientQuicRtt" },
+    { section: "边缘", label: "坐标", value: cf.latitude !== undefined ? `${text(cf.latitude)}, ${text(cf.longitude)}` : "—", source: "request.cf" },
+    { section: "边缘", label: "Ray", value: display(edge?.ray), source: "CF-Ray" },
+    { section: "浏览器测量", label: "WebGL", value: browser.webgl ? `${browser.webgl.unmaskedRenderer || browser.webgl.renderer} · ${browser.webgl.unmaskedVendor || browser.webgl.vendor}` : "不可用", source: "WEBGL_debug_renderer_info" },
+    { section: "浏览器测量", label: "Canvas 哈希", value: shortHash(browser.canvasHash), source: "SHA-256，完整值在原始 JSON" },
+    { section: "浏览器测量", label: "音频哈希", value: shortHash(browser.audioHash), source: "SHA-256，完整值在原始 JSON" },
+    { section: "浏览器测量", label: "WebRTC", value: webrtc, source: "stun.cloudflare.com / stun.l.google.com" },
+    { section: "浏览器测量", label: "屏幕", value: `${browser.screen.width}×${browser.screen.height} · ${browser.screen.colorDepth} bit · dpr ${browser.window.devicePixelRatio}`, source: "screen / devicePixelRatio" },
+    { section: "浏览器测量", label: "窗口", value: `inner ${browser.window.innerWidth}×${browser.window.innerHeight} · outer ${browser.window.outerWidth}×${browser.window.outerHeight}`, source: "window" },
+    { section: "浏览器测量", label: "硬件", value: `${browser.hardwareConcurrency ?? "—"} 线程 · 内存 ${browser.deviceMemory ?? "—"} GB · 触点 ${browser.maxTouchPoints}`, source: "hardwareConcurrency / deviceMemory" },
+    { section: "浏览器测量", label: "webdriver", value: browser.webdriver ? "true" : "false", source: "navigator.webdriver" },
+    { section: "浏览器测量", label: "连接", value: connection, source: "navigator.connection" },
+    { section: "浏览器测量", label: "权限", value: permissionText || "—", source: "Permissions API" },
+    { section: "浏览器测量", label: "存储能力", value: storageText, source: "探测后立即删除临时键" },
+  ];
+}
+
+function claimedFields(edge: EdgePayload | null, browser: BrowserReport): Field[] {
+  const headers = edge?.headers ?? {};
+  const hints = browser.userAgentData;
+  return [
+    { section: "请求头", label: "User-Agent", value: display(headerValue(headers, "user-agent") ?? browser.userAgent), source: headerValue(headers, "user-agent") ? "请求头" : "navigator.userAgent（请求头里没有）" },
+    { section: "请求头", label: "Client Hints", value: [headerValue(headers, "sec-ch-ua"), headerValue(headers, "sec-ch-ua-mobile"), headerValue(headers, "sec-ch-ua-platform")].filter(Boolean).join(" · ") || "请求里没有 Sec-CH-UA", source: "Sec-CH-UA*" },
+    { section: "请求头", label: "Accept-Language", value: display(headerValue(headers, "accept-language")), source: "Accept-Language" },
+    { section: "请求头", label: "已省略的头", value: edge?.omittedHeaders.length ? edge.omittedHeaders.join(", ") : "这次没有出现 Cookie / Authorization", source: "只记录名字，不回传内容" },
+    { section: "脚本可读", label: "时区", value: `${browser.timezone} · ${browser.timezoneOffset}`, source: "Intl.DateTimeFormat" },
+    { section: "脚本可读", label: "语言", value: browser.languages.join(", ") || "—", source: `navigator.languages · locale ${browser.locale || "—"}` },
+    { section: "脚本可读", label: "platform / vendor", value: `${browser.platform || "—"} · ${browser.vendor || "—"}`, source: "navigator.platform / vendor" },
+    { section: "脚本可读", label: "userAgentData", value: hints ? [`platform ${hints.platform ?? "—"}`, `mobile ${hints.mobile}`, hints.brands, hints.architecture ? `arch ${hints.architecture}/${hints.bitness ?? "—"}` : null, hints.platformVersion ? `版本 ${hints.platformVersion}` : null, hints.model ? `型号 ${hints.model}` : null].filter(Boolean).join(" · ") : "浏览器没有 userAgentData", source: "navigator.userAgentData" },
+    { section: "脚本可读", label: "完整版本列表", value: display(hints?.fullVersionList), source: "getHighEntropyValues" },
+    { section: "脚本可读", label: "其他", value: [`DNT ${browser.doNotTrack ?? "—"}`, `GPC ${browser.globalPrivacyControl ?? "—"}`, `pdf ${browser.pdfViewerEnabled ?? "—"}`, `cookieEnabled ${browser.cookieEnabled}`].join(" · "), source: "navigator" },
+  ];
+}
+
+async function run(): Promise<void> {
+  const status = document.querySelector("#status");
+  if (status) status.textContent = "正在读取边缘与浏览器信号…";
+  const [edgeResult, browser] = await Promise.all([loadEdge(), collectBrowser()]);
+  const headers = edgeResult.payload?.headers ?? {};
+  const score = scoreVisit({
+    edge: edgeSnapshotFromApi(edgeResult.payload),
+    claimed: claimedFromSignals({
+      userAgent: browser.userAgent,
+      platform: browser.platform,
+      languages: browser.languages,
+      timezone: browser.timezone,
+      headers,
+      chPlatform: browser.userAgentData?.platform ?? null,
+      chMobile: browser.userAgentData?.mobile ?? null,
+    }),
+    observed: {
+      webdriver: browser.webdriver,
+      webglRenderer: browser.webgl?.unmaskedRenderer ?? browser.webgl?.renderer ?? null,
+      hardwareConcurrency: browser.hardwareConcurrency,
+      maxTouchPoints: browser.maxTouchPoints,
+      screenWidth: browser.screen.width,
+      screenHeight: browser.screen.height,
+      outerWidth: browser.window.outerWidth,
+      outerHeight: browser.window.outerHeight,
+      webrtcGlobalIps: browser.webrtc.globalIps,
+    },
+  });
+  const statusText = edgeResult.error
+    ? "边缘接口不可用，下面主要是浏览器信号。"
+    : "采集完成。结果只留在这个页面里。";
+  renderPage({
+    status: statusText,
+    edgeError: edgeResult.error,
+    score,
+    observed: observedFields(edgeResult.payload, browser),
+    claimed: claimedFields(edgeResult.payload, browser),
+    raw: {
+      edge: edgeResult.payload,
+      edgeError: edgeResult.error,
+      browser,
+      score,
+    },
+  });
+}
+
+document.querySelector("#rerun")?.addEventListener("click", () => {
+  void run();
+});
+
+void run();
