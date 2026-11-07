@@ -1,5 +1,5 @@
 import { assembleIntel, type IpIntel } from "../shared/intel.ts";
-import type { ScoreResult } from "../shared/score.ts";
+import type { ScoreResult, Tone } from "../shared/score.ts";
 
 export type Field = {
   section: string;
@@ -34,7 +34,7 @@ function escapeHtml(value: string): string {
 function flag(code: string | null): string {
   if (!code || code.length !== 2 || !/^[A-Za-z]{2}$/.test(code)) return "";
   const points = [...code.toUpperCase()].map((char) => 0x1f1e6 + char.charCodeAt(0) - 65);
-  return `${String.fromCodePoint(...points)} `;
+  return String.fromCodePoint(...points);
 }
 
 function formatAsn(asn: string | null): string {
@@ -87,24 +87,39 @@ function short(value: string | null): string {
   return value.length > 16 ? value.slice(0, 16) : value;
 }
 
-function rows(items: { label: string; value: string; note?: string }[]): string {
+function isUnknown(value: string): boolean {
+  return value === "无法查询" || value === "无法判断" || value === "—" || value === "未知";
+}
+
+function rows(items: { label: string; value: string; note?: string; mono?: boolean; badge?: Tone }[]): string {
   return items
-    .map(
-      (item) => `<div class="kv">
+    .map((item) => {
+      const value = item.badge
+        ? `<span class="badge tone-${item.badge}">${escapeHtml(item.value)}</span>`
+        : `<span class="${[item.mono ? "mono" : "", isUnknown(item.value) ? "is-unknown" : ""].filter(Boolean).join(" ")}">${escapeHtml(item.value)}</span>`;
+      const wide = !item.badge && item.value.length > 42 ? " is-wide" : "";
+      return `<div class="kv${wide}">
         <dt>${escapeHtml(item.label)}</dt>
-        <dd>${escapeHtml(item.value)}${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</dd>
-      </div>`,
-    )
+        <dd>${value}${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</dd>
+      </div>`;
+    })
     .join("");
+}
+
+function groupLabel(title: string, en: string): string {
+  return `<header class="group-head"><h2>${escapeHtml(title)}<span>${escapeHtml(en)}</span></h2></header>`;
 }
 
 function ipFacts(score: ScoreResult): string {
   const exit = score.exit;
   const place = [exit.countryLabel, exit.region, exit.city].filter((item) => item && item !== "未知").join(" · ") || "地区未知";
   const org = exit.asOrganization || "组织名未知";
-  return `<p class="ip-addr">${flag(exit.country)}${escapeHtml(exit.ip ?? "没有 IP")}</p>
-    <p>${escapeHtml(place)}</p>
-    <p>${escapeHtml(formatAsn(exit.asn))} · ${escapeHtml(org)}</p>`;
+  const mark = flag(exit.country);
+  return `<div class="ip-id">
+      <p class="ip-addr">${mark ? `<span class="flag" aria-hidden="true">${mark}</span>` : ""}<span class="mono">${escapeHtml(exit.ip ?? "没有 IP")}</span></p>
+      <p class="ip-place">${escapeHtml(place)}</p>
+      <p class="ip-org"><span class="mono">${escapeHtml(formatAsn(exit.asn))}</span> · ${escapeHtml(org)}</p>
+    </div>`;
 }
 
 function chinaCard(score: ScoreResult): string {
@@ -112,7 +127,7 @@ function chinaCard(score: ScoreResult): string {
   const ipv4 = Boolean(exit.ip && !exit.ip.includes(":"));
   if (exit.country === "CN" && ipv4) {
     return `<article class="ip-card">
-      <h3>中国出口 IPv4</h3>
+      <header class="ip-head"><h3>中国出口 IPv4</h3></header>
       ${ipFacts(score)}
       <p class="src">边缘国家是中国，这条就是当前出口。</p>
     </article>`;
@@ -123,10 +138,15 @@ function chinaCard(score: ScoreResult): string {
       ? "当前出口是 IPv6，没有另测到中国 IPv4。"
       : `边缘国家是${exit.countryLabel}，不是中国。本站没有中国探测点，不会编造另一条中国 IPv4。`;
   return `<article class="ip-card is-muted">
-    <h3>中国出口 IPv4</h3>
-    <p class="ip-addr">非中国出口</p>
-    <p>${escapeHtml(why)}</p>
+    <header class="ip-head"><h3>中国出口 IPv4</h3><span class="badge tone-neutral">非中国出口</span></header>
+    <p class="ip-note">${escapeHtml(why)}</p>
   </article>`;
+}
+
+function checkTone(state: string): Tone {
+  if (state === "未发现" || state === "无记录" || state === "无公开记录") return "ok";
+  if (state === "无法查询" || state === "无历史库") return "neutral";
+  return "bad";
 }
 
 function checks(score: ScoreResult): string {
@@ -139,11 +159,11 @@ function checks(score: ScoreResult): string {
   ] as const;
   return items
     .map(([label, item]) => {
-      const tone = item.state === "未发现" || item.state === "无记录" ? "ok" : item.state === "无法查询" ? "neutral" : "bad";
-      return `<article class="check tone-${tone}" title="${escapeHtml(item.note)}">
-        <h3>${escapeHtml(label)}</h3>
-        <p>${escapeHtml(item.state)}</p>
-      </article>`;
+      const tone = checkTone(item.state);
+      return `<li title="${escapeHtml(item.note)}">
+        <span>${escapeHtml(label)}</span>
+        <span class="badge tone-${tone}">${escapeHtml(item.state)}</span>
+      </li>`;
     })
     .join("");
 }
@@ -161,10 +181,12 @@ function scenes(score: ScoreResult): string {
   return items
     .map(([label, item]) => {
       const tone = item.advice === "推荐" ? "ok" : item.advice === "不推荐" ? "bad" : "warn";
-      return `<article class="scene">
-        <h3>${escapeHtml(label)}</h3>
+      return `<article class="scene tone-${tone}">
+        <div class="scene-top">
+          <h3>${escapeHtml(label)}</h3>
+          <p class="badge tone-${tone}">${escapeHtml(item.advice)}</p>
+        </div>
         <p class="stars" aria-label="${item.score} / 5">${stars(item.score)}</p>
-        <p class="badge tone-${tone}">${escapeHtml(item.advice)}</p>
       </article>`;
     })
     .join("");
@@ -183,6 +205,38 @@ function mark(score: ScoreResult): string {
   return "未标记";
 }
 
+function markTone(score: ScoreResult): Tone {
+  if (score.attribute.kind === "datacenter") return "bad";
+  if (score.attribute.kind === "residential" || score.attribute.kind === "native") return "ok";
+  return "neutral";
+}
+
+function matchTone(value: string): Tone {
+  if (value === "一致") return "ok";
+  if (value === "不一致") return "bad";
+  return "neutral";
+}
+
+function historyTone(label: string): Tone {
+  if (label === "有公开记录") return "bad";
+  if (label === "无公开记录") return "ok";
+  return "neutral";
+}
+
+function rpkiView(state: IpIntel["rpki"]["state"]): { text: string; tone: Tone } {
+  if (state === "valid") return { text: "有效", tone: "ok" };
+  if (state === "invalid") return { text: "无效", tone: "bad" };
+  if (state === "unknown") return { text: "不确定", tone: "warn" };
+  return { text: "无法查询", tone: "neutral" };
+}
+
+function riskTone(band: ScoreResult["risk"]["band"]): Tone {
+  if (band === "低") return "ok";
+  if (band === "中") return "warn";
+  if (band === "高") return "bad";
+  return "neutral";
+}
+
 export function renderPage(input: {
   status: string;
   score: ScoreResult;
@@ -196,7 +250,10 @@ export function renderPage(input: {
   raw: unknown;
 }): void {
   const status = document.querySelector("#status");
-  if (status) status.textContent = input.status;
+  if (status) {
+    status.textContent = input.status;
+    status.className = input.status ? "is-error" : "";
+  }
   const { score } = input;
   const intel =
     input.intel ??
@@ -218,168 +275,203 @@ export function renderPage(input: {
     : input.udpHolder
       ? input.udpHolder
       : "归属地无法查询";
+  const udpExit = sameUdp ? (score.exit.ip ?? "—") : leaked ? leaked.detail : "没有解析出与边缘不同的公网地址";
+  const ripeNote = input.udpHolder ? "归属 ASN 来自 RIPEstat。" : "";
+  const signalNote = udp?.note ?? "";
+  const udpNote = signalNote && signalNote !== udpExit ? `${signalNote}${ripeNote ? ` ${ripeNote}` : ""}` : ripeNote;
+  const regionTone = score.regionSupport.state === "正常" ? "ok" : score.regionSupport.state === "受限" ? "bad" : "neutral";
+  const attributeLabel = score.attribute.tag ? `${score.attribute.label} · ${score.attribute.tag}` : score.attribute.label;
+  const rpki = rpkiView(intel.rpki.state);
+  const trafficTone = score.traffic.badge === "人类为主" ? "ok" : "warn";
 
   const verdict = document.querySelector("#verdict");
   if (verdict) {
+    verdict.removeAttribute("aria-busy");
     const probeRows = input.probes
       .map((probe) => {
         const timing = probe.ms === null ? "无计时" : `${probe.ms} ms`;
         return `<div class="probe">
-          <strong>${escapeHtml(probe.name)}</strong>
-          <span>${probe.ok ? "浏览器已连通" : "没有连通"}</span>
+          <div>
+            <strong>${escapeHtml(probe.name)}</strong>
+            <span class="sub ${probe.ok ? "ok" : "bad"}">${probe.ok ? "浏览器已连通" : "没有连通"}</span>
+          </div>
           <b>${escapeHtml(timing)}</b>
         </div>`;
       })
       .join("");
-    const attributeLabel = score.attribute.tag ? `${score.attribute.label} · ${score.attribute.tag}` : score.attribute.label;
-    verdict.innerHTML = `<div class="stack" data-trust="${score.trust.score}" data-region="${score.regionSupport.state}" data-ai="${score.scenes.ai.advice}">
-      <section class="block">
-        <h2>出口 IP 对照</h2>
+    verdict.innerHTML = `<div class="stack" data-trust="${score.trust.score}" data-region="${escapeHtml(score.regionSupport.state)}" data-ai="${escapeHtml(score.scenes.ai.advice)}">
+      <section class="hero">
+        <div class="hero-main tone-${score.trust.tone}">
+          <h2>Claude AI 信任评分</h2>
+          <div class="hero-score">
+            <div class="trust-gauge" role="img" aria-label="Claude AI Trust Score ${score.trust.score}，${escapeHtml(score.trust.headline)}，${escapeHtml(score.trust.detail)}">
+              ${dial(score.trust.score)}
+              <div class="trust-face"><strong>${score.trust.score}</strong></div>
+            </div>
+            <div>
+              <p class="trust-line"><strong>${escapeHtml(score.trust.headline)}</strong><span>${escapeHtml(score.trust.detail)}</span></p>
+              <div class="scale" aria-hidden="true"><span>高危</span><span>25</span><span>50</span><span>75</span><span>可信</span></div>
+              <div class="scale-bar" aria-hidden="true"><span style="width:${score.trust.score}%"></span></div>
+              <p class="disclaimer">启发式估计，与 Anthropic 无关。</p>
+            </div>
+          </div>
+        </div>
+        <div class="hero-side region-card tone-${regionTone}">
+          <h2>Claude 支持地区</h2>
+          <p class="status-lg">${escapeHtml(score.regionSupport.state)}</p>
+          <p>${escapeHtml(score.regionSupport.note)}</p>
+        </div>
+      </section>
+
+      <section class="group">
+        ${groupLabel("出口 IP", "Exit")}
         <div class="ip-grid">
           ${chinaCard(score)}
           <article class="ip-card">
-            <h3>Cloudflare 出口 IP</h3>
+            <header class="ip-head"><h3>Cloudflare 出口 IP</h3></header>
             ${ipFacts(score)}
             <p class="src">来源：CF-Connecting-IP 与 request.cf。边缘机房 ${escapeHtml(score.exit.colo ?? "未知")}。</p>
           </article>
           <article class="ip-card">
-            <h3>Claude AI 出口 IP</h3>
+            <header class="ip-head"><h3>Claude AI 出口 IP</h3></header>
             ${ipFacts(score)}
             <p class="src">本站也在 Cloudflare 后面，测到的就是这次访问的出口。Claude 从网络侧通常看到的是同一条访客出口。这里没有单独去连 claude.ai 再取一个 IP。</p>
           </article>
         </div>
       </section>
 
-      <section class="score-row">
-        <article class="trust-card tone-${score.trust.tone}">
-          <h2>Claude AI 信任评分</h2>
-          <div class="trust-gauge" role="img" aria-label="Claude AI Trust Score ${score.trust.score}，${score.trust.headline}，${score.trust.detail}">
-            ${dial(score.trust.score)}
-            <div class="trust-face"><strong>${score.trust.score}</strong></div>
-          </div>
-          <div class="scale" aria-hidden="true"><span>高危</span><span>25</span><span>50</span><span>75</span><span>可信</span></div>
-          <div class="scale-bar" aria-hidden="true"><span style="width:${score.trust.score}%"></span></div>
-          <p class="trust-status"><b>${escapeHtml(score.trust.headline)}</b> / ${escapeHtml(score.trust.detail)}</p>
-          <p class="src">启发式估计，与 Anthropic 无关。</p>
-        </article>
-        <article class="region-card tone-${score.regionSupport.state === "正常" ? "ok" : score.regionSupport.state === "受限" ? "bad" : "neutral"}">
-          <h2>Claude 支持地区</h2>
-          <p class="big">${escapeHtml(score.regionSupport.state)}</p>
-          <p>${escapeHtml(score.regionSupport.note)}</p>
-        </article>
-      </section>
-
-      <section class="block">
-        <h2>Claude AI 出口 IP 属性</h2>
-        <dl class="grid">${rows([
-          { label: "地区", value: score.exit.countryLabel },
-          { label: "城市", value: [score.exit.region, score.exit.city].filter(Boolean).join(" · ") || "—" },
-          { label: "IP 属性", value: attributeLabel },
-          { label: "ASN", value: formatAsn(score.exit.asn) },
-          { label: "运营商", value: score.exit.asOrganization ?? "—" },
-        ])}</dl>
-      </section>
-
-      <section class="block">
-        <h2>Claude AI 出口 IP 安全检测</h2>
-        <div class="checks">${checks(score)}</div>
-      </section>
-
-      <section class="block">
-        <h2>Claude 可用性检测</h2>
-        <p class="src">浏览器计时，不是官方状态。到美国站点延迟偏高不一定是故障。</p>
-        <div class="probes">${probeRows || `<p class="src">还没有探测结果。</p>`}</div>
-      </section>
-
-      <section class="pair">
+      <section class="group">
+        ${groupLabel("属性与安全", "Checks")}
+        <div class="pair">
+          <article class="block">
+            <h2>Claude AI 出口 IP 属性</h2>
+            <div class="kv-grid">${rows([
+              { label: "地区", value: score.exit.countryLabel },
+              { label: "城市", value: [score.exit.region, score.exit.city].filter(Boolean).join(" · ") || "—" },
+              { label: "IP 属性", value: attributeLabel, badge: score.attribute.tone },
+              { label: "ASN", value: formatAsn(score.exit.asn), mono: true },
+              { label: "运营商", value: score.exit.asOrganization ?? "—" },
+            ])}</div>
+          </article>
+          <article class="block">
+            <h2>Claude AI 出口 IP 安全检测</h2>
+            <ul class="check-list">${checks(score)}</ul>
+          </article>
+        </div>
         <article class="block">
-          <h2>DNS 泄露检测</h2>
-          <p class="big">无法判断</p>
-          <p>浏览器不暴露系统解析器，页面也看不到有没有开 DoH。不能判断 DNS 是否泄露，所以不显示 DNS 出口 IP。</p>
+          <h2>Claude 可用性检测</h2>
+          <p class="note">浏览器计时，不是官方状态。到美国站点延迟偏高不一定是故障。</p>
+          <div class="probes">${probeRows || `<p class="note">还没有探测结果。</p>`}</div>
         </article>
+      </section>
+
+      <section class="group">
+        ${groupLabel("泄露检测", "Leaks")}
+        <div class="pair">
+          <article class="block">
+            <div class="card-head">
+              <h2>DNS 泄露检测</h2>
+              <span class="badge tone-neutral">无法判断</span>
+            </div>
+            <p class="prose">浏览器不暴露系统解析器，页面也看不到有没有开 DoH。不能判断 DNS 是否泄露，所以不显示 DNS 出口 IP。</p>
+          </article>
+          <article class="block">
+            <div class="card-head">
+              <h2>WebRTC UDP 泄露检测</h2>
+              <span class="badge tone-${udp?.tone ?? "neutral"}">${escapeHtml(udp?.badge ?? "无法判断")}</span>
+            </div>
+            <div class="kv-grid">${rows([
+              { label: "UDP 出口", value: udpExit, mono: true },
+              { label: "归属地", value: udpPlace },
+            ])}</div>
+            ${udpNote ? `<p class="note">${escapeHtml(udpNote)}</p>` : ""}
+          </article>
+        </div>
+      </section>
+
+      <section class="group">
+        ${groupLabel("使用场景", "Scenes")}
         <article class="block">
-          <h2>WebRTC UDP 泄露检测</h2>
-          <p class="big">${escapeHtml(udp?.badge ?? "无法判断")}</p>
-          <p>UDP 出口：${escapeHtml(sameUdp ? (score.exit.ip ?? "—") : leaked ? leaked.detail : "没有解析出与边缘不同的公网地址")}</p>
-          <p>归属地：${escapeHtml(udpPlace)}</p>
-          <p class="src">${escapeHtml(udp?.note ?? "")}${input.udpHolder ? " 归属 ASN 来自 RIPEstat。" : ""}</p>
+          <h2>使用场景 / 类型</h2>
+          <div class="kv-grid cols-2">${rows([
+            { label: "IP 原生性", value: intel.broadcast.label, note: intel.broadcast.note },
+            { label: "标记", value: mark(score), badge: markTone(score) },
+            { label: "运营商类型", value: operatorKind(score), note: "词表估计，不是 ASN 自报。" },
+            { label: "人机流量", value: `人类 ${score.traffic.human}% · 机器 ${score.traffic.machine}%`, note: `${score.traffic.badge} · ${score.traffic.source}` },
+          ])}</div>
+          <div class="meter traffic tone-${trafficTone}" aria-hidden="true"><span style="width:${score.traffic.human}%"></span></div>
+          <div class="scenes">${scenes(score)}</div>
+          <p class="note">场景分是 1–5 的估算，不是 TikTok 或 Claude 的官方准入。</p>
         </article>
       </section>
 
-      <section class="block">
-        <h2>用户设备信息</h2>
-        <dl class="grid">${rows([
-          { label: "时区", value: score.deviceHints.timezone, note: `${input.device.timezone} ${input.device.timezoneOffset}` },
-          { label: "语言", value: score.deviceHints.language, note: score.deviceHints.languageNote },
-          { label: "系统 / 浏览器", value: osAndBrowser(input.device.userAgent) },
-          { label: "Cookie", value: input.device.cookieEnabled ? "已启用" : "未启用" },
-          { label: "WebGL 渲染器", value: input.device.webglRenderer ?? "不可用" },
-          { label: "Canvas 指纹", value: short(input.device.canvasHash) },
-          { label: "WebGL 指纹", value: short(input.device.webglHash) },
-        ])}</dl>
+      <section class="group">
+        ${groupLabel("登记与威胁", "Registry")}
+        <article class="block">
+          <h2>服务商 / ASN</h2>
+          <div class="kv-grid cols-2">${rows([
+            { label: "服务商", value: score.exit.asOrganization ?? intel.asn.registrant ?? "无法查询", note: "Cloudflare asOrganization；登记名来自 RDAP（若查到）。" },
+            { label: "ASN", value: formatAsn(score.exit.asn), mono: true },
+            { label: "ASN 归属", value: intel.asn.holder ?? intel.asn.registrant ?? score.exit.asOrganization ?? "无法查询" },
+            { label: "ASN 自报类型", value: "无法查询", note: "公开 RDAP 通常不自报 Hosting/ISP。" },
+            { label: "估计类型", value: operatorKind(score), note: "由组织名词表估计。" },
+            { label: "IPv4 总量", value: intel.routing.state === "已查询" ? `${count(intel.routing.ipv4Addresses)} 个地址 / ${count(intel.routing.ipv4Prefixes)} 条前缀` : "无法查询", note: intel.routing.state === "已查询" ? "RIPEstat 宣告规模。" : "", mono: intel.routing.state === "已查询" },
+            { label: "预估带宽", value: intel.bandwidth },
+            { label: "注册日期", value: intel.asn.registered ?? intel.rdap.registered ?? "无法查询", mono: true },
+            { label: "企业信息", value: intel.asn.registrant ?? intel.rdap.registrant ?? "无法查询" },
+            { label: "网段", value: intel.rdap.range ?? intel.prefix ?? "无法查询", note: intel.rdap.name ? `RDAP ${intel.rdap.name}` : "", mono: true },
+            { label: "登记类型", value: intel.rdap.type ?? "无法查询", note: "这是网段登记类型，不是 Hosting 标签。" },
+          ])}</div>
+        </article>
+        <div class="pair">
+          <article class="block">
+            <h2>技术指标</h2>
+            <div class="kv-grid">${rows([
+              { label: "Bogon", value: intel.bogon ? "是" : "否", note: intel.bogonNote, badge: intel.bogon ? "bad" : "ok" },
+              { label: "广播", value: intel.broadcast.label, note: intel.broadcast.note },
+              { label: "反向 DNS", value: intel.ptr.state === "有记录" ? (intel.ptr.value ?? "有记录") : intel.ptr.state, mono: intel.ptr.state === "有记录" },
+            ])}</div>
+            <div class="port-row">
+              <button type="button" id="port-stub">开放端口</button>
+              <p id="port-result" class="note">不扫描端口。对访客或第三方地址做端口探测不在这次检查里。</p>
+            </div>
+          </article>
+          <article class="block">
+            <h2>IP 情报</h2>
+            <div class="kv-grid">${rows([
+              { label: "风险标记", value: score.risk.band, note: score.risk.score === null ? "没有边缘数据，不给风险等级。" : `启发式风险 ${score.risk.score}。`, badge: riskTone(score.risk.band) },
+              { label: "滥用等级", value: score.securityChecks.abuse.state, note: score.securityChecks.abuse.note, badge: checkTone(score.securityChecks.abuse.state) },
+              { label: "HTTP 蜜罐黑名单", value: intel.honeypot, note: "没有可用的免费蜜罐查询，不编造命中。" },
+              { label: "RPKI", value: rpki.text, note: intel.rpki.note, badge: rpki.tone },
+            ])}</div>
+          </article>
+        </div>
+        <article class="block">
+          <h2>风险深度检测</h2>
+          <ul class="check-list cols-5">${checks(score)}</ul>
+          <p class="note">VPN、代理、Tor 和爬虫都只看本次组织和浏览器字样。没有单独买情报库。</p>
+        </article>
+        <section class="history">
+          <h2>历史</h2>
+          <p class="badge tone-${historyTone(score.history.label)}">${escapeHtml(score.history.label)}</p>
+          <p>${escapeHtml(score.history.note)} 本次会话第 ${input.session.runs} 次测量，只留在这个标签页。${input.session.ipChanges > 0 ? "出口 IP 有变化。" : input.session.runs > 1 ? "出口 IP 未变。" : ""}</p>
+        </section>
       </section>
 
-      <section class="block">
-        <h2>使用场景 / 类型</h2>
-        <dl class="grid">${rows([
-          { label: "IP 原生性", value: intel.broadcast.label, note: intel.broadcast.note },
-          { label: "标记", value: mark(score) },
-          { label: "运营商类型", value: operatorKind(score), note: "词表估计，不是 ASN 自报。" },
-          { label: "人机流量", value: `人类 ${score.traffic.human}% · 机器 ${score.traffic.machine}%`, note: `${score.traffic.badge} · ${score.traffic.source}` },
-        ])}</dl>
-        <div class="meter traffic" aria-hidden="true"><span style="width:${score.traffic.human}%"></span></div>
-        <div class="scenes">${scenes(score)}</div>
-        <p class="src">场景分是 1–5 的估算，不是 TikTok 或 Claude 的官方准入。</p>
-      </section>
-
-      <section class="block">
-        <h2>服务商 / ASN</h2>
-        <dl class="grid">${rows([
-          { label: "服务商", value: score.exit.asOrganization ?? intel.asn.registrant ?? "无法查询", note: "Cloudflare asOrganization；登记名来自 RDAP（若查到）。" },
-          { label: "ASN", value: formatAsn(score.exit.asn) },
-          { label: "ASN 归属", value: intel.asn.holder ?? intel.asn.registrant ?? score.exit.asOrganization ?? "无法查询" },
-          { label: "ASN 自报类型", value: "无法查询", note: "公开 RDAP 通常不自报 Hosting/ISP。" },
-          { label: "估计类型", value: operatorKind(score), note: "由组织名词表估计。" },
-          { label: "IPv4 总量", value: intel.routing.state === "已查询" ? `${count(intel.routing.ipv4Addresses)} 个地址 / ${count(intel.routing.ipv4Prefixes)} 条前缀` : "无法查询", note: intel.routing.state === "已查询" ? "RIPEstat 宣告规模。" : "" },
-          { label: "预估带宽", value: intel.bandwidth },
-          { label: "注册日期", value: intel.asn.registered ?? intel.rdap.registered ?? "无法查询" },
-          { label: "企业信息", value: intel.asn.registrant ?? intel.rdap.registrant ?? "无法查询" },
-          { label: "网段", value: intel.rdap.range ?? intel.prefix ?? "无法查询", note: intel.rdap.name ? `RDAP ${intel.rdap.name}` : "" },
-          { label: "登记类型", value: intel.rdap.type ?? "无法查询", note: "这是网段登记类型，不是 Hosting 标签。" },
-        ])}</dl>
-      </section>
-
-      <section class="block">
-        <h2>技术指标</h2>
-        <dl class="grid">${rows([
-          { label: "Bogon", value: intel.bogon ? "是" : "否", note: intel.bogonNote },
-          { label: "广播", value: intel.broadcast.label, note: intel.broadcast.note },
-          { label: "反向 DNS", value: intel.ptr.state === "有记录" ? (intel.ptr.value ?? "有记录") : intel.ptr.state },
-        ])}</dl>
-        <p><button type="button" id="port-stub">开放端口</button></p>
-        <p id="port-result" class="src">不扫描端口。对访客或第三方地址做端口探测不在这次检查里。</p>
-      </section>
-
-      <section class="block">
-        <h2>IP 情报</h2>
-        <dl class="grid">${rows([
-          { label: "风险标记", value: score.risk.band, note: score.risk.score === null ? "没有边缘数据，不给风险等级。" : `启发式风险 ${score.risk.score}。` },
-          { label: "滥用等级", value: score.securityChecks.abuse.state, note: score.securityChecks.abuse.note },
-          { label: "HTTP 蜜罐黑名单", value: intel.honeypot, note: "没有可用的免费蜜罐查询，不编造命中。" },
-          { label: "RPKI", value: intel.rpki.state === "valid" ? "有效" : intel.rpki.state === "invalid" ? "无效" : intel.rpki.state === "unknown" ? "不确定" : "无法查询", note: intel.rpki.note },
-        ])}</dl>
-      </section>
-
-      <section class="block">
-        <h2>风险深度检测</h2>
-        <div class="checks">${checks(score)}</div>
-        <p class="src">VPN、代理、Tor 和爬虫都只看本次组织和浏览器字样。没有单独买情报库。</p>
-      </section>
-
-      <section class="history">
-        <h2>历史</h2>
-        <p class="badge">${escapeHtml(score.history.label)}</p>
-        <p>${escapeHtml(score.history.note)} 本次会话第 ${input.session.runs} 次测量，只留在这个标签页。${input.session.ipChanges > 0 ? "出口 IP 有变化。" : input.session.runs > 1 ? "出口 IP 未变。" : ""}</p>
+      <section class="group">
+        ${groupLabel("设备与指纹", "Device")}
+        <article class="block">
+          <h2>用户设备信息</h2>
+          <div class="kv-grid cols-2">${rows([
+            { label: "时区", value: score.deviceHints.timezone, note: `${input.device.timezone} ${input.device.timezoneOffset}`, badge: matchTone(score.deviceHints.timezone) },
+            { label: "语言", value: score.deviceHints.language, note: score.deviceHints.languageNote, badge: matchTone(score.deviceHints.language) },
+            { label: "系统 / 浏览器", value: osAndBrowser(input.device.userAgent) },
+            { label: "Cookie", value: input.device.cookieEnabled ? "已启用" : "未启用", badge: input.device.cookieEnabled ? "ok" : "neutral" },
+            { label: "WebGL 渲染器", value: input.device.webglRenderer ?? "不可用" },
+            { label: "Canvas 指纹", value: short(input.device.canvasHash), mono: true },
+            { label: "WebGL 指纹", value: short(input.device.webglHash), mono: true },
+          ])}</div>
+        </article>
       </section>
     </div>`;
     document.querySelector("#port-stub")?.addEventListener("click", () => {
