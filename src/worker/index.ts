@@ -1,7 +1,6 @@
 import { Hono } from "hono";
-import { isReputationLookupIp, parseStopForumSpam, type AbuseRecord } from "../shared/history.ts";
-import { assembleIntel, reverseV4, type IpIntel } from "../shared/intel.ts";
 import { splitHeaders } from "../shared/redact.ts";
+import { gather, type LookupEnv } from "./lookup.ts";
 
 const CF_KEYS = [
   "asn",
@@ -54,98 +53,36 @@ function pickCf(cf: CfRecord): CfRecord {
   return picked;
 }
 
-function historyRecord(attempted: boolean): AbuseRecord {
-  return { source: "none", appears: null, frequency: null, lastSeen: null, attempted };
-}
-
 function asnNumber(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value));
   if (typeof value === "string" && /^\d+$/.test(value.trim())) return value.trim();
   return null;
 }
 
-async function fetchJson(url: string, headers?: HeadersInit): Promise<unknown | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 2200);
-  try {
-    const response = await fetch(url, {
-      cache: "no-store",
-      signal: controller.signal,
-      redirect: "follow",
-      headers: { Accept: "application/json", "User-Agent": "cf-identity-check/1.0", ...headers },
-    });
-    if (!response.ok) return null;
-    return await response.json();
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-async function lookupIntel(ip: string | null, asn: string | null, edgeCountry: string | null): Promise<IpIntel> {
-  const publicIp = ip && isReputationLookupIp(ip) ? ip : null;
-  const ptrName = reverseV4(publicIp);
-  const [rdapIp, ptrBody, prefixBody] = await Promise.all([
-    publicIp ? fetchJson(`https://rdap.org/ip/${publicIp}`, { Accept: "application/rdap+json" }) : null,
-    ptrName ? fetchJson(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(ptrName)}&type=PTR`, { Accept: "application/dns-json" }) : null,
-    publicIp ? fetchJson(`https://stat.ripe.net/data/prefix-overview/data.json?resource=${encodeURIComponent(publicIp)}`) : null,
-  ]);
-  const prefix =
-    prefixBody && typeof prefixBody === "object"
-      ? (prefixBody as { data?: { resource?: unknown } }).data?.resource
-      : null;
-  const prefixText = typeof prefix === "string" ? prefix : null;
-  const [rdapAsn, routingBody, rpkiBody] = await Promise.all([
-    asn ? fetchJson(`https://rdap.org/autnum/${asn}`, { Accept: "application/rdap+json" }) : null,
-    asn ? fetchJson(`https://stat.ripe.net/data/routing-status/data.json?resource=AS${asn}`) : null,
-    asn && prefixText
-      ? fetchJson(`https://stat.ripe.net/data/rpki-validation/data.json?resource=${asn}&prefix=${encodeURIComponent(prefixText)}`)
-      : null,
-  ]);
-  return assembleIntel({
-    ip,
-    edgeCountry,
-    ptrBody,
-    rdapIp,
-    rdapAsn,
-    prefixBody,
-    routingBody,
-    rpkiBody,
-  });
-}
-
-async function lookupAbuse(ip: string | null): Promise<AbuseRecord> {
-  if (!ip || !isReputationLookupIp(ip)) return historyRecord(false);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1800);
-  try {
-    const response = await fetch(`https://api.stopforumspam.org/api?ip=${ip}&json`, {
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    if (!response.ok) return historyRecord(true);
-    return parseStopForumSpam(await response.json()) ?? historyRecord(true);
-  } catch {
-    return historyRecord(true);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-const app = new Hono();
+const app = new Hono<{ Bindings: LookupEnv }>();
 
 app.get("/api/edge", async (c) => {
   const request = c.req.raw;
   const cf = pickCf((request as Request & { cf?: CfRecord }).cf ?? {});
   const { headers, omittedHeaders } = splitHeaders(request.headers);
   const connectingIp = request.headers.get("CF-Connecting-IP");
-  const asn = asnNumber(cf.asn);
-  const edgeCountry = typeof cf.country === "string" ? cf.country : request.headers.get("CF-IPCountry");
-  const [history, intel] = await Promise.all([
-    lookupAbuse(connectingIp),
-    lookupIntel(connectingIp, asn, edgeCountry),
-  ]);
+  const edgeCountry = text(cf.country) ?? request.headers.get("CF-IPCountry");
+  const gathered = await gather({
+    ip: connectingIp,
+    cfAsn: asnNumber(cf.asn),
+    cfOrg: text(cf.asOrganization),
+    country: edgeCountry,
+    region: text(cf.region),
+    city: text(cf.city),
+    latitude: cf.latitude,
+    longitude: cf.longitude,
+    timezone: text(cf.timezone),
+    env: c.env ?? {},
+  });
   c.header("Cache-Control", "no-store");
   c.header(
     "Accept-CH",
@@ -159,10 +96,12 @@ app.get("/api/edge", async (c) => {
     cf,
     headers,
     omittedHeaders,
-    history,
-    intel,
+    history: gathered.history,
+    intel: gathered.intel,
+    network: gathered.network,
     collectedAt: new Date().toISOString(),
-    privacy: "Cookie、Authorization 和 Cloudflare Access JWT 不会返回。Worker 不保存请求。公网出口 IP 会查询 StopForumSpam、RDAP、RIPEstat 和反向 DNS。",
+    privacy:
+      "Cookie、Authorization 和 Cloudflare Access JWT 不会返回。Worker 不记录访问，也不写 KV、D1 或 Cookie。公网出口 IP 会查询 RDAP、RIPEstat、PeeringDB、ip-api.com、ipapi.co、ipwho.is、ipapi.is、ipinfo.io、Bilibili、proxycheck.io、Tor 出口列表和 StopForumSpam。这些公开结果会在边缘短时缓存。可选的 CF_RADAR_TOKEN、IPINFO_TOKEN、IPAPI_IS_KEY、PROXYCHECK_KEY、IP2LOCATION_KEY 只留在 Worker 环境里。",
   });
 });
 

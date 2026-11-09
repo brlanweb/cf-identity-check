@@ -1,3 +1,4 @@
+import { parseIceCandidate, type IceCandidate } from "../shared/ip.ts";
 import { sha256 } from "./hash.ts";
 
 export type BrowserReport = {
@@ -64,6 +65,7 @@ export type BrowserReport = {
     globalIps: string[];
     mdns: boolean;
     error: string | null;
+    classified: IceCandidate[];
   };
   permissions: Record<string, string>;
   storage: Record<string, boolean>;
@@ -178,42 +180,19 @@ function webglInfo(): BrowserReport["webgl"] {
   }
 }
 
-function isGlobalIp(ip: string): boolean {
-  if (ip.includes(":")) {
-    const text = ip.toLowerCase();
-    if (text === "::1" || text.startsWith("fe80:") || text.startsWith("fc") || text.startsWith("fd")) return false;
-    return text.includes(":");
-  }
-  const parts = ip.split(".").map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((part) => Number.isNaN(part) || part < 0 || part > 255)) return false;
-  const [a, b] = parts;
-  if (a === 10 || a === 127 || a === 0) return false;
-  if (a === 192 && b === 168) return false;
-  if (a === 172 && b >= 16 && b <= 31) return false;
-  if (a === 169 && b === 254) return false;
-  if (a === 100 && b >= 64 && b <= 127) return false;
-  return true;
-}
-
-function ipFromCandidate(candidate: string): string | null {
-  const parts = candidate.split(" ");
-  const ip = parts[4];
-  if (!ip || ip.endsWith(".local")) return null;
-  return ip;
-}
-
 function collectWebRtc(): Promise<BrowserReport["webrtc"]> {
   return new Promise((resolve) => {
     const candidates: string[] = [];
+    const classified: IceCandidate[] = [];
     const ips = new Set<string>();
     let settled = false;
-    let pc: RTCPeerConnection;
+    let pc: RTCPeerConnection | undefined;
     const finish = (error: string | null) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
       try {
-        pc.close();
+        pc?.close();
       } catch {
         /* already closed */
       }
@@ -221,15 +200,21 @@ function collectWebRtc(): Promise<BrowserReport["webrtc"]> {
       resolve({
         candidates,
         ips: list,
-        globalIps: list.filter(isGlobalIp),
-        mdns: candidates.some((candidate) => candidate.includes(".local")),
+        globalIps: list,
+        mdns: classified.some((item) => item.kind === "mdns"),
         error,
+        classified,
       });
     };
-    const timer = window.setTimeout(() => finish(null), 3500);
+    const timer = window.setTimeout(() => finish(null), 4000);
     try {
       pc = new RTCPeerConnection({
-        iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] }],
+        iceServers: [
+          { urls: "stun:stun.cloudflare.com:3478" },
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun.chat.bilibili.com:3478" },
+          { urls: "stun:stun.miwifi.com:3478" },
+        ],
       });
     } catch {
       finish("浏览器没有提供 WebRTC。");
@@ -240,9 +225,10 @@ function collectWebRtc(): Promise<BrowserReport["webrtc"]> {
         finish(null);
         return;
       }
-      candidates.push(event.candidate.candidate);
-      const ip = ipFromCandidate(event.candidate.candidate);
-      if (ip) ips.add(ip);
+      if (candidates.length < 40) candidates.push(event.candidate.candidate);
+      const parsed = parseIceCandidate(event.candidate.candidate);
+      classified.push(parsed);
+      if (parsed.kind === "public" && parsed.ip) ips.add(parsed.ip);
     };
     pc.createDataChannel("cf-identity-check");
     pc.createOffer()

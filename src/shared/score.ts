@@ -1133,6 +1133,19 @@ export function claimedFromSignals(input: {
   };
 }
 
+/** Browser timezone against the edge timezone and country. Missing data stays 无法对照. */
+export function timezoneAlignment(
+  browserZone: string,
+  edgeZone: string | null,
+  edgeCountry: string | null,
+): "一致" | "不一致" | "无法对照" {
+  if (!browserZone) return "无法对照";
+  const country = edgeCountry?.toUpperCase() ?? "";
+  const knownCountry = Boolean(country && country !== "XX" && country !== "T1");
+  if (!edgeZone && !knownCountry) return "无法对照";
+  return compareGeo(browserZone, edgeZone, edgeCountry).conflict ? "不一致" : "一致";
+}
+
 export function display(value: string | number | boolean | null | undefined): string {
   if (value === null || value === undefined || value === "") return "—";
   return String(value);
