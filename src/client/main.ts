@@ -1,10 +1,14 @@
 import "./styles.css";
 import { collectBrowser, type BrowserReport } from "./collect.ts";
+import { detectBrowser } from "./detect.ts";
 import { sha256, shortHash } from "./hash.ts";
+import { refreshExitMap, renderIpPage, showIpLoading } from "./ip-view.ts";
 import { renderPage, type Field, type Reachability, type SessionMemo } from "./render.ts";
 import type { AbuseRecord } from "../shared/history.ts";
 import { isReputationLookupIp } from "../shared/history.ts";
 import type { IpIntel } from "../shared/intel.ts";
+import { buildIpModel } from "../shared/model.ts";
+import type { NetworkReport } from "../shared/report.ts";
 import { headerValue } from "../shared/redact.ts";
 import {
   claimedFromSignals,
@@ -23,6 +27,7 @@ type EdgePayload = {
   omittedHeaders: string[];
   history?: AbuseRecord;
   intel?: IpIntel;
+  network?: NetworkReport;
   collectedAt: string;
   privacy: string;
 };
@@ -182,15 +187,38 @@ async function run(): Promise<void> {
   const id = ++runId;
   const status = document.querySelector("#status");
   if (status) {
-    status.textContent = "正在读取边缘与浏览器信号…";
+    status.textContent = "正在读取边缘、浏览器和公开数据源…";
     status.className = "is-loading";
   }
-  const [edgeResult, browser, probes] = await Promise.all([
+  showIpLoading();
+  const [edgeResult, browser, probes, detected] = await Promise.all([
     loadEdge(),
     collectBrowser(),
     Promise.all([probe("claude.ai", "https://claude.ai/"), probe("anthropic.com", "https://www.anthropic.com/")]),
+    detectBrowser(),
   ]);
   if (id !== runId) return;
+  const edge = edgeSnapshotFromApi(edgeResult.payload);
+  const edgeIp = edge?.connectingIp ?? edgeResult.payload?.connectingIp ?? null;
+  const edgeUsable = Boolean(edgeIp && isReputationLookupIp(edgeIp));
+  renderIpPage(
+    buildIpModel({
+      network: edgeResult.payload?.network ?? null,
+      echoes: detected.echoes,
+      direct: { ipinfo: detected.ipinfo, ipip: detected.ipip },
+      edge: {
+        ip: edgeIp,
+        timezone: edgeUsable ? edge?.timezone ?? null : null,
+        country: edgeUsable ? edge?.country ?? null : null,
+        colo: edgeUsable ? edge?.colo ?? null : null,
+      },
+      browserTimezone: browser.timezone,
+      webrtcCandidates: browser.webrtc.classified,
+      webrtcError: browser.webrtc.error,
+      abuse: abuseFrom(edgeResult.payload),
+    }),
+    browser,
+  );
   const headers = edgeResult.payload?.headers ?? {};
   const score = scoreVisit({
     edge: edgeSnapshotFromApi(edgeResult.payload),
@@ -226,7 +254,7 @@ async function run(): Promise<void> {
   if (id !== runId) return;
   const session = recordSession(score.exit.ip, score.trust.score);
   renderPage({
-    status: edgeResult.error ? "边缘接口不可用，分数主要来自浏览器。" : "",
+    status: edgeResult.error ? "边缘接口不可用。浏览器回显仍会显示，信任分主要来自浏览器。" : "",
     score,
     session,
     intel: edgeResult.payload?.intel ?? null,
@@ -258,4 +286,22 @@ document.querySelector("#rerun")?.addEventListener("click", () => {
   void run();
 });
 
+function bindTabs(): void {
+  const ipTab = document.querySelector("#tab-ip");
+  const trustTab = document.querySelector("#tab-trust");
+  const ipPanel = document.querySelector("#panel-ip");
+  const trustPanel = document.querySelector("#panel-trust");
+  const select = (which: "ip" | "trust") => {
+    const ipOn = which === "ip";
+    ipTab?.setAttribute("aria-selected", ipOn ? "true" : "false");
+    trustTab?.setAttribute("aria-selected", ipOn ? "false" : "true");
+    ipPanel?.toggleAttribute("hidden", !ipOn);
+    trustPanel?.toggleAttribute("hidden", ipOn);
+    if (ipOn) refreshExitMap();
+  };
+  ipTab?.addEventListener("click", () => select("ip"));
+  trustTab?.addEventListener("click", () => select("trust"));
+}
+
+bindTabs();
 void run();

@@ -8,4 +8,5 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   }
+  // Optional secrets, set with `wrangler secret put` (see README): CF_RADAR_TOKEN, IPINFO_TOKEN, IPAPI_IS_KEY, PROXYCHECK_KEY, IP2LOCATION_KEY
 }

@@ -5,48 +5,63 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#141820" />
     <meta name="color-scheme" content="dark" />
-    <title>Claude AI 信任检查 · 出口 IP</title>
+    <title>IP 信息与纯净度</title>
     <meta
       name="description"
-      content="对照当前出口 IP 的 Claude AI 信任分、地区、属性、DNS、UDP、ASN 和设备信号。启发式，与 Anthropic 无关。"
+      content="对照当前出口的 IPv4、IPv6 和 Cloudflare 边缘地址，并列出各地理库、ASN 与风险来源。纯净度只根据查到的信号计算。"
     />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
+    <script defer src="/vendor/leaflet/leaflet.js"></script>
   </head>
   <body>
     <header class="top">
       <div class="top-copy">
-        <p class="kicker">当前访问的出口 IP</p>
-        <h1>Claude AI 信任检查</h1>
+        <p class="kicker">当前访问的出口</p>
+        <h1>IP 信息与纯净度</h1>
       </div>
       <div class="top-actions">
         <p class="pill">服务器不落库</p>
         <button type="button" id="rerun">重新测量</button>
       </div>
     </header>
-    <main id="app">
-      <p id="status" class="is-loading" role="status">正在读取边缘与浏览器信号…</p>
-      <div id="verdict" aria-busy="true">
-        <div class="stack skeleton" aria-hidden="true">
-          <div class="skel skel-hero"></div>
-          <div class="skel-grid three">
-            <div class="skel"></div>
-            <div class="skel"></div>
-            <div class="skel"></div>
-          </div>
-          <div class="skel-grid two">
-            <div class="skel"></div>
-            <div class="skel"></div>
+    <nav class="tabs" role="tablist" aria-label="页面">
+      <button type="button" id="tab-ip" role="tab" aria-selected="true" aria-controls="panel-ip">IP 检测</button>
+      <button type="button" id="tab-trust" role="tab" aria-selected="false" aria-controls="panel-trust">Claude 信任分</button>
+    </nav>
+    <main>
+      <p id="status" class="is-loading" role="status">正在读取边缘、浏览器和公开数据源…</p>
+      <div id="panel-ip" class="panel" role="tabpanel">
+        <div id="ip-panel" aria-busy="true">
+          <div class="stack skeleton" aria-hidden="true">
+            <div class="skel skel-hero"></div>
+            <div class="skel-grid two">
+              <div class="skel"></div>
+              <div class="skel"></div>
+            </div>
           </div>
         </div>
       </div>
-      <div id="details"></div>
-      <div id="raw"></div>
+      <div id="panel-trust" class="panel" role="tabpanel" hidden>
+        <div id="verdict" aria-busy="true">
+          <div class="stack skeleton" aria-hidden="true">
+            <div class="skel skel-hero"></div>
+            <div class="skel-grid three">
+              <div class="skel"></div>
+              <div class="skel"></div>
+              <div class="skel"></div>
+            </div>
+          </div>
+        </div>
+        <div id="details"></div>
+        <div id="raw"></div>
+      </div>
     </main>
     <footer>
-      <p>服务器不落库。Cookie 和 Authorization 不回传。会话次数只留在本标签页。</p>
-      <p>信任分是启发式，与 Anthropic 无关。公网出口 IP 会向 StopForumSpam 查一次；查不到就显示无历史库。</p>
+      <p>服务器不记录访问。Cookie 和 Authorization 不回传。公网 IP 会拿去查公开数据库，结果在边缘短时缓存。</p>
+      <p>查不到的项目显示「无法查询」或「未配置」，不编造。Claude 信任分在另一个标签里，是启发式，与 Anthropic 无关。</p>
     </footer>
-    <noscript>需要启用 JavaScript 才能测量时区、WebRTC 和指纹。</noscript>
+    <noscript>需要启用 JavaScript 才能测量时区、WebRTC、指纹和浏览器侧的 IPv4 / IPv6。</noscript>
     <script type="module" src="/src/client/main.ts"></script>
   </body>
 </html>
