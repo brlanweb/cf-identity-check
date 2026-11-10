@@ -5,11 +5,13 @@ import {
   facilityVotes,
   ipOrigin,
   parseBilibili,
+  ipapiRiskFields,
   parseIpApi,
   parseIpinfo,
   parseIpip,
   parsePeeringDbWebsite,
   parseProxycheck,
+  proxycheckReport,
   parseRadar,
   registrationCountry,
   toCountryCode,
@@ -77,6 +79,38 @@ describe("source parsers", () => {
     const proxy = parseProxycheck({ status: "ok", "8.8.8.8": { proxy: "no", type: "Business", provider: "Google LLC" } }, "8.8.8.8");
     assert.equal(proxy.proxy, false);
     assert.equal(proxy.type, "Business");
+    const useful = proxycheckReport({
+      body: { status: "ok", "1.1.1.1": { proxy: "no", type: "Wireless" } },
+      ip: "1.1.1.1",
+      hasKey: false,
+      failureNote: "失败",
+    });
+    assert.equal(useful.state, "已查询");
+    assert.equal(useful.type, "Wireless");
+    const needsKey = proxycheckReport({
+      body: { status: "error", message: "API key required" },
+      ip: "1.1.1.1",
+      hasKey: false,
+      failureNote: "失败",
+    });
+    assert.equal(needsKey.state, "未配置");
+    const quota = proxycheckReport({
+      body: { status: "denied", message: "Daily query limit exceeded" },
+      ip: "1.1.1.1",
+      hasKey: false,
+      failureNote: "失败",
+    });
+    assert.equal(quota.state, "无法查询");
+    const transport = proxycheckReport({ body: null, ip: "1.1.1.1", hasKey: false, failureNote: "超时" });
+    assert.equal(transport.state, "无法查询");
+    assert.equal(transport.note, "超时");
+    const keyedMiss = proxycheckReport({
+      body: { status: "error", message: "API key required" },
+      ip: "1.1.1.1",
+      hasKey: true,
+      failureNote: "失败",
+    });
+    assert.equal(keyedMiss.state, "无法查询");
 
     const radar = parseRadar({ success: true, result: { summary_0: { human: "25.54", bot: "74.46" } } });
     assert.deepEqual({ human: radar?.human, bot: radar?.bot }, { human: 25.54, bot: 74.46 });
@@ -98,5 +132,34 @@ describe("source parsers", () => {
     assert.equal(ipOrigin("US", [{ source: "Cloudflare", countryCode: "JP" }]).label, "广播IP");
     assert.equal(ipOrigin("US", [{ source: "Cloudflare", countryCode: "US" }, { source: "IPIP", countryCode: "US" }]).label, "原生IP");
     assert.equal(ipOrigin(null, [{ source: "Cloudflare", countryCode: "US" }]).label, "无法判断");
+
+    const geo = {
+      place: {
+        id: "ipapi-is" as const,
+        status: "已查询" as const,
+        ip: "8.8.8.8",
+        countryCode: "US",
+        country: "United States",
+        region: null,
+        city: "Ashburn",
+        latitude: null,
+        longitude: null,
+        timezone: null,
+        note: "按边缘 IP 查询。这次响应没有 is_vpn / is_datacenter 等风险字段。",
+      },
+      isVpn: null,
+      isProxy: null,
+      isTor: null,
+      isDatacenter: null,
+      isMobile: null,
+    };
+    assert.equal(ipapiRiskFields({ parsed: geo, hasKey: false, failureNote: "失败" }).state, "未配置");
+    assert.equal(ipapiRiskFields({ parsed: { ...geo, isVpn: false }, hasKey: false, failureNote: "失败" }).state, "已查询");
+    assert.equal(ipapiRiskFields({ parsed: geo, hasKey: true, failureNote: "失败" }).state, "已查询");
+    assert.equal(ipapiRiskFields({ parsed: null, hasKey: false, failureNote: "失败" }).state, "无法查询");
+    assert.equal(
+      ipapiRiskFields({ parsed: { ...geo, place: { ...geo.place, status: "无法查询" } }, hasKey: false, failureNote: "失败" }).state,
+      "无法查询",
+    );
   });
 });

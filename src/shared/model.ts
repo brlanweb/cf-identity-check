@@ -66,7 +66,20 @@ export type IpModel = {
 };
 
 export const DNS_NOTE =
-  "要判断 DNS 泄露，得有自己的权威 DNS，看是哪台解析器来查一个只出现一次的随机名字。本站没有这样的权威域名，浏览器也不提供系统解析器。不调用别人的泄露测试来编造解析器地址。";
+  "没有结论可以下。要知道 DNS 走了哪台解析器，得有自己的权威域名，让对方来查一个只用一次的名字。本站没有这样的域名，浏览器也不提供系统解析器。这项留在页面上，是因为做不到，不是因为少了一把密钥。";
+
+/** Drop a card or row whose only message is that its secret is missing. Real misses stay. */
+export function presentedPlaces(places: PlaceView[]): PlaceView[] {
+  return places.filter((place) => place.status !== "未配置");
+}
+
+export function presentedRisks(rows: RiskRow[]): RiskRow[] {
+  return rows.filter((row) => row.value !== "未配置");
+}
+
+export function showRadar(radar: { state: string }): boolean {
+  return radar.state !== "未配置";
+}
 
 const PLACE_ORDER: SourceId[] = ["cloudflare", "ipinfo", "ipinfo-direct", "ip-api", "ipapi-co", "ipwho", "ipapi-is", "ip2location", "ipip", "bilibili"];
 
@@ -405,7 +418,9 @@ function riskRows(network: NetworkReport, abuse: AbuseRecord): RiskRow[] {
     boolRow("ip-api.com proxy", network.risk.ipApi.proxy, network.risk.ipApi.state, "ip-api.com", "这个字段把代理、VPN 和 Tor 合在一起。"),
     boolRow("ip-api.com mobile", network.risk.ipApi.mobile, network.risk.ipApi.state, "ip-api.com", "true 表示移动运营商。"),
   ];
-  if (network.risk.proxycheck.state !== "已查询") {
+  if (network.risk.proxycheck.state === "未配置") {
+    rows.push({ label: "proxycheck.io", value: "未配置", source: "proxycheck.io", note: network.risk.proxycheck.note, tone: "neutral" });
+  } else if (network.risk.proxycheck.state !== "已查询") {
     rows.push({ label: "proxycheck.io", value: "无法查询", source: "proxycheck.io", note: network.risk.proxycheck.note, tone: "neutral" });
   } else {
     const value = `${network.risk.proxycheck.proxy ? "proxy" : "非 proxy"}${network.risk.proxycheck.type ? ` · ${network.risk.proxycheck.type}` : ""}`;
@@ -424,7 +439,7 @@ function riskRows(network: NetworkReport, abuse: AbuseRecord): RiskRow[] {
     label: "欺诈黑名单",
     value: "无法查询",
     source: "无",
-    note: "没有接入支付或欺诈评分库。StopForumSpam 只是公开垃圾发帖记录。",
+    note: "没有接支付或欺诈评分。StopForumSpam 只代表公开的垃圾发帖记录。",
     tone: "neutral",
   });
   const rpkiTone = network.identity.rpki.state === "valid" ? "ok" : network.identity.rpki.state === "invalid" ? "bad" : "neutral";
@@ -440,6 +455,7 @@ function riskRows(network: NetworkReport, abuse: AbuseRecord): RiskRow[] {
 
 function ipapiIsRow(network: NetworkReport): RiskRow {
   const risk = network.risk.ipapiIs;
+  if (risk.state === "未配置") return { label: "ipapi.is 风险字段", value: "未配置", source: "ipapi.is", note: risk.note, tone: "neutral" };
   if (risk.state !== "已查询") return { label: "ipapi.is 风险字段", value: "无法查询", source: "ipapi.is", note: risk.note, tone: "neutral" };
   const parts = [
     risk.isVpn === null ? null : `VPN ${risk.isVpn ? "是" : "否"}`,

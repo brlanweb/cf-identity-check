@@ -1,22 +1,24 @@
 # Copy to .dev.vars for `npm run dev`. Leave a line blank to keep that source unavailable.
 # Production: `npx wrangler secret put <NAME>`. Never commit real tokens.
 
-# Cloudflare Radar API token. Without it, 人机流量比 shows 未配置.
+# Cloudflare Radar API token. Without it, the 人机流量比 row is hidden.
 # https://developers.cloudflare.com/api/resources/radar/
 CF_RADAR_TOKEN=
 
-# Optional. ipinfo.io is queried without a token; a token raises the quota.
+# Optional. ipinfo.io is queried without a token; a token raises the quota. The card stays either way.
 # https://ipinfo.io/account/token
 IPINFO_TOKEN=
 
-# Optional. ipapi.is free responses omit is_vpn / is_datacenter. A key fills those fields when the API returns them.
+# Optional. ipapi.is free responses often omit is_vpn / is_datacenter.
+# Geo stays visible. The risk row is hidden only when this key is absent and those fields are missing.
 # https://ipapi.is/
 IPAPI_IS_KEY=
 
 # Optional. proxycheck.io answers without a key at a lower quota.
+# A failed or rate-limited answer stays visible. The row is hidden only when the API says a key is required.
 # https://proxycheck.io/
 PROXYCHECK_KEY=
 
-# Optional. IP2Location stays 未配置 until this is set.
+# Optional. The IP2Location place and proxy row stay hidden until this is set.
 # https://www.ip2location.io/
 IP2LOCATION_KEY=

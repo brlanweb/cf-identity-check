@@ -8,11 +8,12 @@ import {
   parseIp2Location,
   parseIpApi,
   parseIpapiCo,
+  ipapiRiskFields,
   parseIpapiIs,
   parseIpinfo,
   parseIpwho,
   parsePeeringDbWebsite,
-  parseProxycheck,
+  proxycheckReport,
   parseRadar,
   parseRdapCidr,
   parseRipeIdentity,
@@ -181,10 +182,17 @@ export async function gather(input: {
     ipApi: ipApiParsed && ipApiParsed.place.status === "已查询"
       ? { state: "已查询", hosting: ipApiParsed.hosting, proxy: ipApiParsed.proxy, mobile: ipApiParsed.mobile, note: ipApiParsed.place.note }
       : { state: "无法查询", hosting: null, proxy: null, mobile: null, note: ipApiParsed?.place.note ?? failNote("ip-api.com", ipApi.status) },
-    proxycheck: proxy.json ? parseProxycheck(proxy.json, ip) : { state: "无法查询", proxy: null, type: null, provider: null, note: failNote("proxycheck.io", proxy.status) },
-    ipapiIs: ipapiIsParsed && ipapiIsParsed.place.status === "已查询"
-      ? { state: "已查询", isVpn: ipapiIsParsed.isVpn, isProxy: ipapiIsParsed.isProxy, isTor: ipapiIsParsed.isTor, isDatacenter: ipapiIsParsed.isDatacenter, isMobile: ipapiIsParsed.isMobile, note: ipapiIsParsed.place.note }
-      : { state: "无法查询", isVpn: null, isProxy: null, isTor: null, isDatacenter: null, isMobile: null, note: ipapiIsParsed?.place.note ?? failNote("ipapi.is", ipapiIs.status) },
+    proxycheck: proxycheckReport({
+      body: proxy.json,
+      ip,
+      hasKey: Boolean(proxyKey),
+      failureNote: failNote("proxycheck.io", proxy.status),
+    }),
+    ipapiIs: ipapiRiskFields({
+      parsed: ipapiIsParsed,
+      hasKey: Boolean(ipapiKey),
+      failureNote: failNote("ipapi.is", ipapiIs.status),
+    }),
     ip2location: !ip2Key
       ? { state: "未配置", isProxy: null, note: "未设置 IP2LOCATION_KEY。" }
       : ip2Parsed && ip2Parsed.place.status === "已查询"

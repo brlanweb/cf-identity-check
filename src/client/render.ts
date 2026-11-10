@@ -106,8 +106,8 @@ function rows(items: { label: string; value: string; note?: string; mono?: boole
     .join("");
 }
 
-function groupLabel(title: string, en: string): string {
-  return `<header class="group-head"><h2>${escapeHtml(title)}<span>${escapeHtml(en)}</span></h2></header>`;
+function groupLabel(title: string): string {
+  return `<header class="section-head"><h2>${escapeHtml(title)}</h2></header>`;
 }
 
 function ipFacts(score: ScoreResult): string {
@@ -324,7 +324,7 @@ export function renderPage(input: {
       </section>
 
       <section class="group">
-        ${groupLabel("出口 IP", "Exit")}
+        ${groupLabel("出口 IP")}
         <div class="ip-grid">
           ${chinaCard(score)}
           <article class="ip-card">
@@ -341,7 +341,7 @@ export function renderPage(input: {
       </section>
 
       <section class="group">
-        ${groupLabel("属性与安全", "Checks")}
+        ${groupLabel("属性与安全")}
         <div class="pair">
           <article class="block">
             <h2>Claude AI 出口 IP 属性</h2>
@@ -366,7 +366,7 @@ export function renderPage(input: {
       </section>
 
       <section class="group">
-        ${groupLabel("泄露检测", "Leaks")}
+        ${groupLabel("泄露检测")}
         <div class="pair">
           <article class="block">
             <div class="card-head">
@@ -390,7 +390,7 @@ export function renderPage(input: {
       </section>
 
       <section class="group">
-        ${groupLabel("使用场景", "Scenes")}
+        ${groupLabel("使用场景")}
         <article class="block">
           <h2>使用场景 / 类型</h2>
           <div class="kv-grid cols-2">${rows([
@@ -406,7 +406,7 @@ export function renderPage(input: {
       </section>
 
       <section class="group">
-        ${groupLabel("登记与威胁", "Registry")}
+        ${groupLabel("登记与威胁")}
         <article class="block">
           <h2>服务商 / ASN</h2>
           <div class="kv-grid cols-2">${rows([
@@ -416,7 +416,7 @@ export function renderPage(input: {
             { label: "ASN 自报类型", value: "无法查询", note: "公开 RDAP 通常不自报 Hosting/ISP。" },
             { label: "估计类型", value: operatorKind(score), note: "由组织名词表估计。" },
             { label: "IPv4 总量", value: intel.routing.state === "已查询" ? `${count(intel.routing.ipv4Addresses)} 个地址 / ${count(intel.routing.ipv4Prefixes)} 条前缀` : "无法查询", note: intel.routing.state === "已查询" ? "RIPEstat 宣告规模。" : "", mono: intel.routing.state === "已查询" },
-            { label: "预估带宽", value: intel.bandwidth },
+            { label: "预估带宽", value: intel.bandwidth, note: "没有带宽数据源，不估算一个数。" },
             { label: "注册日期", value: intel.asn.registered ?? intel.rdap.registered ?? "无法查询", mono: true },
             { label: "企业信息", value: intel.asn.registrant ?? intel.rdap.registrant ?? "无法查询" },
             { label: "网段", value: intel.rdap.range ?? intel.prefix ?? "无法查询", note: intel.rdap.name ? `RDAP ${intel.rdap.name}` : "", mono: true },
@@ -459,7 +459,7 @@ export function renderPage(input: {
       </section>
 
       <section class="group">
-        ${groupLabel("设备与指纹", "Device")}
+        ${groupLabel("设备与指纹")}
         <article class="block">
           <h2>用户设备信息</h2>
           <div class="kv-grid cols-2">${rows([

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#141820" />
+    <meta name="theme-color" content="#12110e" />
     <meta name="color-scheme" content="dark" />
     <title>IP 信息与纯净度</title>
     <meta
@@ -17,12 +17,12 @@
   <body>
     <header class="top">
       <div class="top-copy">
-        <p class="kicker">当前访问的出口</p>
+        <p class="kicker">出口与身份</p>
         <h1>IP 信息与纯净度</h1>
       </div>
       <div class="top-actions">
-        <p class="pill">服务器不落库</p>
-        <button type="button" id="rerun">重新测量</button>
+        <p class="pill">不记录这次访问</p>
+        <button type="button" id="rerun" class="rerun">重新测量</button>
       </div>
     </header>
     <nav class="tabs" role="tablist" aria-label="页面">
@@ -33,12 +33,10 @@
       <p id="status" class="is-loading" role="status">正在读取边缘、浏览器和公开数据源…</p>
       <div id="panel-ip" class="panel" role="tabpanel">
         <div id="ip-panel" aria-busy="true">
-          <div class="stack skeleton" aria-hidden="true">
-            <div class="skel skel-hero"></div>
-            <div class="skel-grid two">
-              <div class="skel"></div>
-              <div class="skel"></div>
-            </div>
+          <div class="sheet skeleton" aria-hidden="true">
+            <div class="skel skel-mast"></div>
+            <div class="skel skel-row"></div>
+            <div class="skel skel-row"></div>
           </div>
         </div>
       </div>
@@ -59,7 +57,7 @@
     </main>
     <footer>
       <p>服务器不记录访问。Cookie 和 Authorization 不回传。公网 IP 会拿去查公开数据库，结果在边缘短时缓存。</p>
-      <p>查不到的项目显示「无法查询」或「未配置」，不编造。Claude 信任分在另一个标签里，是启发式，与 Anthropic 无关。</p>
+      <p>没配密钥的项目不显示。查失败或没有结果的，仍写「无法查询」或「无法判断」，不编造。Claude 信任分在另一个标签里，是启发式，与 Anthropic 无关。</p>
     </footer>
     <noscript>需要启用 JavaScript 才能测量时区、WebRTC、指纹和浏览器侧的 IPv4 / IPv6。</noscript>
     <script type="module" src="/src/client/main.ts"></script>

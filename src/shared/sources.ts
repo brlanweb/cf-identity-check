@@ -435,6 +435,48 @@ export function parseIpapiIs(body: unknown): {
   };
 }
 
+type IpapiParsed = NonNullable<ReturnType<typeof parseIpapiIs>>;
+
+/** Risk booleans are often absent without IPAPI_IS_KEY. Geo still stands; the empty risk row is 未配置. */
+export function ipapiRiskFields(input: {
+  parsed: IpapiParsed | null;
+  hasKey: boolean;
+  failureNote: string;
+}): {
+  state: QueryState;
+  isVpn: boolean | null;
+  isProxy: boolean | null;
+  isTor: boolean | null;
+  isDatacenter: boolean | null;
+  isMobile: boolean | null;
+  note: string;
+} {
+  const parsed = input.parsed;
+  const queried = parsed?.place.status === "已查询";
+  if (!parsed || !queried) {
+    return {
+      state: "无法查询",
+      isVpn: null,
+      isProxy: null,
+      isTor: null,
+      isDatacenter: null,
+      isMobile: null,
+      note: parsed?.place.note || input.failureNote,
+    };
+  }
+  const flags = [parsed.isVpn, parsed.isProxy, parsed.isTor, parsed.isDatacenter, parsed.isMobile];
+  const missingKey = !input.hasKey && flags.every((flag) => flag === null);
+  return {
+    state: missingKey ? "未配置" : "已查询",
+    isVpn: parsed.isVpn,
+    isProxy: parsed.isProxy,
+    isTor: parsed.isTor,
+    isDatacenter: parsed.isDatacenter,
+    isMobile: parsed.isMobile,
+    note: missingKey ? "未设置 IPAPI_IS_KEY。地理结果仍会显示，缺的风险字段不当成否。" : parsed.place.note,
+  };
+}
+
 export function parseIpinfo(body: unknown, id: "ipinfo" | "ipinfo-direct"): GeoPlace | null {
   if (!isRecord(body)) return null;
   if (body.error || body.status === 429 || body.bogon === true) {
@@ -557,6 +599,34 @@ export function parseProxycheck(body: unknown, ip: string): {
     provider: asText(row.provider),
     note: "proxycheck.io。type 为 VPN、TOR、SOCKS 时单独计入；Business 不拿来判断机房或住宅。",
   };
+}
+
+/** Hide the row only when the API itself says a key is required. Quota and transport failures stay visible. */
+export function proxycheckReport(input: {
+  body: unknown;
+  ip: string;
+  hasKey: boolean;
+  failureNote: string;
+}): ReturnType<typeof parseProxycheck> {
+  if (!input.body) {
+    return { state: "无法查询", proxy: null, type: null, provider: null, note: input.failureNote };
+  }
+  const parsed = parseProxycheck(input.body, input.ip);
+  if (parsed.state === "已查询" || input.hasKey || !proxycheckNeedsKey(input.body)) return parsed;
+  return {
+    state: "未配置",
+    proxy: null,
+    type: null,
+    provider: null,
+    note: "未设置 PROXYCHECK_KEY。接口要求密钥，这次没有可用结果。",
+  };
+}
+
+function proxycheckNeedsKey(body: unknown): boolean {
+  if (!isRecord(body)) return false;
+  const message = `${asText(body.message) ?? ""} ${asText(body.error) ?? ""}`.toLowerCase();
+  if (!message.trim() || /quota|limit|exceed|too many|rate/.test(message)) return false;
+  return /api key|apikey|key required|missing key|no api key/.test(message);
 }
 
 const VPN_TYPES = new Set(["vpn", "openvpn"]);

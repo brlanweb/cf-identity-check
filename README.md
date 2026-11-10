@@ -2,7 +2,7 @@
 
 Cloudflare Workers 页面：看**这一次访问的出口 IP**，把几家公开数据库的结果并排摆出来，再按查到的信号算一个 **纯净度系数**。
 
-纯净度不是 IPPure 或任何一家的官方分数。查不到就写「无法查询」或「未配置」，不补一个看起来合理的数。
+纯净度不是 IPPure 或任何一家的官方分数。查不到就写「无法查询」或「无法判断」，不补一个看起来合理的数。需要密钥、而密钥又没配的项目不出现在页面上；密钥配上之后，对应的一块会自己回来。
 
 原来的 **Claude AI 信任分**还在第二个标签里。那一页仍是启发式，不连接 Claude，也与 Anthropic 无关。
 
@@ -14,7 +14,7 @@ English notes are below the Chinese sections.
 2. **位置。** 每家单独一格，不合成一个答案：Cloudflare `request.cf`、ipinfo.io、ip-api.com、ipapi.co、ipwho.is、ipapi.is、IP2Location、IPIP（浏览器直连 `myip.ipip.net`）、Bilibili（按边缘 IP 查公开接口）。登记国和其中某家的国家不同，就标成 **广播 IP**；都一致才是 **原生 IP**。对不上国家代码就写「无法判断」。
 3. **ASN、名称、域名、范围。** ASN 优先用 Cloudflare，其次 RIPEstat，再其次 ipwho.is。名称按 RDAP、RIPEstat、Cloudflare 分别列出。域名来自 PeeringDB 的网站字段和 ipwho.is 的 `connection.domain`。范围优先用 RDAP 的起止地址，BGP 前缀另列 RIPEstat。
 4. **机房 / 住宅 / 移动，以及 VPN、代理、Tor。** 只采用来源自己的字段：ip-api.com 的 hosting / proxy / mobile，proxycheck.io 的 type，ipapi.is 的 `is_*`（免费响应里常常没有），IP2Location 的 `is_proxy`，以及 Tor Project 的 `torbulkexitlist`。来源打架就标「不一致」。`Business` 不拿来当成住宅或机房。
-5. **人机流量比。** 配置了 `CF_RADAR_TOKEN` 时，用 Cloudflare Radar 的 HTTP bot class（近 7 日，按 ASN）。没配置就显示「未配置」。
+5. **人机流量比。** 配置了 `CF_RADAR_TOKEN` 时，用 Cloudflare Radar 的 HTTP bot class（近 7 日，按 ASN）。没配置时这一项不显示，也不会用估算数字代替。
 6. **纯净度系数。** 0–100 的风险分，越低越纯净。刻度是 0、15、25、40、50、70、100，对应极度纯净、纯净、一般、轻微风险、高风险、极度风险。明细里每一项都写出来。
 7. **WebRTC。** STUN：`stun.cloudflare.com:3478`、`stun.l.google.com:19302`、`stun.chat.bilibili.com:3478`、`stun.miwifi.com:3478`。候选分成公网、私网、CGNAT、mDNS、中继。只有公网候选才会和已知出口比较；只看到 mDNS 时是「无法判断」，不当成没有泄露。
 8. **DNS。** 「无法判断」。本站没有权威 DNS，看不见是哪台解析器来查一个一次性名字。
@@ -69,17 +69,17 @@ English notes are below the Chinese sections.
 
 | 变量 | 不配置时 |
 | --- | --- |
-| `CF_RADAR_TOKEN` | 人机流量比显示「未配置」 |
-| `IPINFO_TOKEN` | 仍会调用 ipinfo.io，只是额度更低 |
-| `IPAPI_IS_KEY` | 仍会调用 ipapi.is；风险字段缺失就显示「无法查询」 |
-| `PROXYCHECK_KEY` | 仍会调用，额度更低 |
-| `IP2LOCATION_KEY` | 这一格显示「未配置」 |
+| `CF_RADAR_TOKEN` | 不显示人机流量比 |
+| `IPINFO_TOKEN` | 仍会调用 ipinfo.io，额度更低，结果照常显示 |
+| `IPAPI_IS_KEY` | 地理照常显示。没有密钥、响应里也没有风险字段时，不显示那一行风险。密钥配上且字段返回后，这一行会再出现。整次查询失败仍显示「无法查询」 |
+| `PROXYCHECK_KEY` | 仍会调用，额度更低。有结果就显示。查询失败或额度用完仍显示「无法查询」。只有接口明确要求密钥、又没有配时，这一行才隐藏 |
+| `IP2LOCATION_KEY` | 不显示 IP2Location 的定位和代理行 |
 
 ## 做不到、因此没有编造的部分
 
 - **DNS 泄露。** 没有自己的权威域名，无法观察解析器。状态保持「无法判断」。
 - **欺诈黑名单。** 没有接入支付或欺诈评分。StopForumSpam 只代表公开垃圾发帖记录。
-- **IP2Location** 和 **Radar 人机比** 在没有密钥时不会用别的数字顶上。
+- **IP2Location** 和 **Radar 人机比** 在没有密钥时不显示，也不会用别的数字顶上。配上密钥后会重新出现。
 - **ipapi.is 免费档** 往往不返回 `is_vpn` / `is_datacenter`。页面不会把缺字段当成「否」。
 - **住宅。** 只有来源明确给出 Residential / ISP 才标住宅。`hosting: false` 不够。
 
@@ -144,7 +144,7 @@ npm run deploy
 
 # English
 
-The homepage compares the exit IP seen by Cloudflare with separate browser IPv4 and IPv6 echoes, then shows geolocation, ASN, and risk answers **per source**. The purity score is a documented risk sum from those answers. Missing data stays unavailable. It is not an IPPure, ipinfo, or Anthropic product.
+The homepage compares the exit IP seen by Cloudflare with separate browser IPv4 and IPv6 echoes, then shows geolocation, ASN, and risk answers **per source**. The purity score is a documented risk sum from those answers. Missing data stays unavailable. Cards that exist only because a secret is unset are omitted until that secret is configured. It is not an IPPure, ipinfo, or Anthropic product.
 
 The Claude trust tab is unchanged in intent: a heuristic, not a connection to Claude.
 
@@ -152,7 +152,7 @@ The Claude trust tab is unchanged in intent: a heuristic, not a connection to Cl
 
 Live without secrets: Cloudflare `request.cf`, RDAP, RIPEstat, PeeringDB, ip-api.com, ipapi.co, ipwho.is, ipapi.is (geo; risk booleans often absent), ipinfo.io, Bilibili's IP lookup, proxycheck.io, the Tor exit list, StopForumSpam, plus browser calls to ipify, ident.me, ipinfo.io, myip.ipip.net, and the STUN servers listed above.
 
-Optional secrets: `CF_RADAR_TOKEN` (ASN human/bot ratio; otherwise 未配置), `IPINFO_TOKEN`, `IPAPI_IS_KEY`, `PROXYCHECK_KEY`, `IP2LOCATION_KEY` (otherwise that row is 未配置). See `.dev.vars.example`.
+Optional secrets: `CF_RADAR_TOKEN` (ASN human/bot ratio; the row is hidden until set), `IPINFO_TOKEN` (still queried, lower quota, still shown), `PROXYCHECK_KEY` (still queried; a failed or rate-limited answer stays visible, and the row is hidden only when the API says a key is required), `IPAPI_IS_KEY` (geo stays; the risk row is hidden only when the key is absent and the response has no risk booleans), `IP2LOCATION_KEY` (that place and proxy row stay hidden until set). See `.dev.vars.example`.
 
 DNS leak detection stays **无法判断** because this site has no authoritative nameserver. There is no fraud-score feed. Purity does not treat a failed lookup as a clean result.
 
